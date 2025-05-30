@@ -1,0 +1,24 @@
+# Build output
+/build/
+*.o
+*.d
+*.elf
+*.hex
+*.bin
+*.map
+*.list
+*.log
+*.su
+
+# IDE-specific files
+*.launch
+*.uvoptx
+*.uvprojx
+.settings/
+
+# STM32CubeIDE / Eclipse
+Debug/
+Release/
+
+# Misc
+.metadata
