@@ -21,8 +21,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include <string.h>
-#include <stdlib.h>
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -42,8 +41,8 @@
 
 /* Private variables ---------------------------------------------------------*/
 I2C_HandleTypeDef hi2c1;
-DMA_HandleTypeDef hdma_i2c1_tx;
 DMA_HandleTypeDef hdma_i2c1_rx;
+DMA_HandleTypeDef hdma_i2c1_tx;
 
 /* USER CODE BEGIN PV */
 uint8_t i2c_RX_done = 0;
@@ -97,10 +96,11 @@ int main(void)
 	MX_DMA_Init();
 	MX_I2C1_Init();
 	/* USER CODE BEGIN 2 */
-	__HAL_DMA_ENABLE(&hdma_i2c1_tx);
-	__HAL_DMA_ENABLE(&hdma_i2c1_rx);
-	__HAL_DMA_ENABLE_IT(&hdma_i2c1_tx, DMA_IT_TC | DMA_IT_HT);
-	__enable_irq();
+//	HAL_NVIC_EnableIRQ(I2C1_EV_IRQn);
+//	__HAL_DMA_ENABLE(&hdma_i2c1_tx);
+//	__HAL_DMA_ENABLE(&hdma_i2c1_rx);
+//	__HAL_DMA_ENABLE_IT(&hdma_i2c1_tx, DMA_IT_TC | DMA_IT_HT);
+//	__enable_irq();
 	//const char wmsg[]="WeloveSTM32!";
 	uint8_t angle_data[] =
 	{ 0x00, 0x00 }; //Angle data buffer, read angle data into this buffer and also write to registers with this buffer for programming
@@ -109,57 +109,46 @@ int main(void)
 	//HAL i2c notes:
 	//address of MPU6050 device is 1101000, but we shift it to left because the transmit and receive functions require that. So we are left with 0xD0
 	//Argument to right of MPU6050_ADDR_LSL1 is the register address, see the register description in onenote.
-	uint8_t addr[1];
+	uint8_t addr[2];
 	/* We compute the MSB and LSB parts of the memory address */
 	addr[0] = (uint8_t) (0x6A);
+	addr[1] = (uint8_t) (0x6B);
+	addr[2] = (uint8_t) (0x6B);
+	addr[3] = (uint8_t) (0x6B);
+	addr[4] = (uint8_t) (0x6B);
+	addr[5] = (uint8_t) (0x6B);
+	addr[6] = (uint8_t) (0x6B);
+	addr[7] = (uint8_t) (0x6B);
+	addr[8] = (uint8_t) (0x6B);
+	addr[9] = (uint8_t) (0x6B);
+	HAL_I2C_StateTypeDef state = HAL_I2C_GetState(&hi2c1);
+
 	HAL_StatusTypeDef returnValue = HAL_I2C_Master_Transmit_DMA(&hi2c1, MPU6050_ADDR_LSL1, addr, 1);
-	while (HAL_I2C_GetState(&hi2c1) != HAL_I2C_STATE_READY);
+	while (!i2c_TX_done);
+	i2c_TX_done = 0;
+	state = HAL_I2C_GetState(&hi2c1);
 	if (returnValue != HAL_OK)
 	{
 		Error_Handler();
 	}
-	if (__HAL_DMA_GET_FLAG(&hdma_i2c1_tx, (0x00000002U)))
-	{  // Transfer error
-		printf("DMA Transfer Error\n");
-		// Handle error here
-	}
-	HAL_DMA_IRQHandler(&hdma_i2c1_tx);
+	state = HAL_I2C_GetState(&hi2c1);
+//	while (HAL_I2C_GetState(&hi2c1) != HAL_I2C_STATE_READY);
+
+//	if (__HAL_DMA_GET_FLAG(&hdma_i2c1_tx, (0x00000002U)))
+//	{  // Transfer error
+//		printf("DMA Transfer Error\n");
+//		// Handle error here
+//	}
+//	HAL_DMA_IRQHandler(&hdma_i2c1_tx);
+//	I2C1_EV_IRQHandler();
+//	HAL_NVIC_EnableIRQ(I2C1_EV_IRQn);
+
+	state = HAL_I2C_GetState(&hi2c1);
+
+	returnValue = HAL_I2C_Master_Transmit_IT(&hi2c1, MPU6050_ADDR_LSL1, addr, 1);
 	while (!i2c_TX_done);
 	i2c_TX_done = 0;
-	uint8_t command = 0x00;
-	i2c_Write_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x6B, &command, 1);
-
-	//Readout contents of registers
-	i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x6A, (uint8_t*) rmsg, 1);  //USER_CTRL
-	i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x6B, (uint8_t*) rmsg, 1); //PWR_MGMT_1, check if device is asleep, if you see 0x40, it is asleep and every register reads 0
-	i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x3B, (uint8_t*) rmsg, 2); //ACCEL_XOUT, 2 bytes
-	i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x3D, (uint8_t*) rmsg, 2); //ACCEL_YOUT, 2 bytes
-	i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x3F, (uint8_t*) rmsg, 2); //ACCEL_ZOUT, 2 bytes
-
-	i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x43, (uint8_t*) rmsg, 2); //GYRO_XOUT, 2 bytes
-	i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x45, (uint8_t*) rmsg, 2); //GYRO_YOUT, 2 bytes
-	i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x47, (uint8_t*) rmsg, 2); //GYRO_ZOUT, 2 bytes
-
-//	//Angle Programming through I2C interface (Option A in datasheet)
-//	//Run in debug mode, make sure to do the 3.3V wiring in fig.  38
-//	//Turn angle to starting position
-//	i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x0C, (uint8_t*)angle_data, 2); //Read From starting position Raw Angle, store result in first two bytes of angle_data
-//	i2c_Write_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x01, (uint8_t*)angle_data, 2); //Write the starting position raw angle into ZPOS register
-//	//Now rotate the magnet to the stop position
-//	i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x0C, (uint8_t*)angle_data, 2); //Read From starting position Raw Angle, store result in first two bytes of angle_data
-//	i2c_Write_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x03, (uint8_t*)angle_data, 2); //Write the starting position raw angle into MPOS register
-//	//Burning the settings to "permanently" program the magnetic encoder.
-//	uint8_t command_buffer[] = {0x00, 0x00, 0x00};
-//	command_buffer[0] = 0x80; //BURN_ANGLE command
-//	i2c_Write_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0xFF, (uint8_t*)command_buffer, 1); //Perform a BURN_ANGLE command by writing 0x80 value into 0xFF register
-//	//Verify burn command
-//	memcpy(command_buffer, ((uint8_t[3]){0x01, 0x11, 0x10}), 3 * sizeof(uint8_t)); //load the buffer with 3 commands, replaces the entire buffer
-//	i2c_Write_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0xFF, (uint8_t*)command_buffer, 3); //Writing these 3 commands sequentially into 0xFF register to load actual OTP non-volatile memory content
-//	//Read ZPOS and MPOS registers to verify the BURN_ANGLE command was successful
-//	i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x01, (uint8_t*)rmsg, 2); //ZPOS, starting pos
-//	i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x03, (uint8_t*)rmsg, 2); //MPOS, stop pos
-//	//Might want to do power up cycle and reread the ZPOS and MPOS registers again to make sure they match with new positions
-
+	state = HAL_I2C_GetState(&hi2c1);
 	/* USER CODE END 2 */
 
 	/* Infinite loop */
@@ -296,7 +285,6 @@ static void MX_GPIO_Init(void)
 	/* USER CODE END MX_GPIO_Init_1 */
 
 	/* GPIO Ports Clock Enable */
-	__HAL_RCC_GPIOA_CLK_ENABLE();
 	__HAL_RCC_GPIOB_CLK_ENABLE();
 
 	/* USER CODE BEGIN MX_GPIO_Init_2 */
@@ -313,15 +301,16 @@ HAL_StatusTypeDef i2c_Read_Accelerometer(I2C_HandleTypeDef *hi2c, uint16_t DevAd
 	addr[0] = (uint8_t) (regAddress);
 
 	/* First we send the memory location address where start reading data */
-	returnValue = HAL_I2C_Master_Seq_Transmit_DMA(hi2c, DevAddress, addr, 1, I2C_FIRST_FRAME);
-//	while (!i2c_TX_done);
-//	i2c_TX_done = 0;
-	while (HAL_I2C_GetState(&hi2c1) != HAL_I2C_STATE_READY);
-	//	uint32_t i2c_error = HAL_I2C_GetError(&hi2c1);
+//	returnValue = HAL_I2C_Master_Seq_Transmit_DMA(hi2c, DevAddress, addr, 1, I2C_FIRST_FRAME);
+	returnValue = HAL_I2C_Master_Transmit_DMA(hi2c, DevAddress, addr, 1);
+	uint32_t i2c_error = HAL_I2C_GetError(&hi2c1);
+	while (!i2c_TX_done);
+	i2c_TX_done = 0;
+
 	/* Next we can retrieve the data from EEPROM */
 	returnValue = HAL_I2C_Master_Seq_Receive_DMA(hi2c, DevAddress, pData, len, I2C_LAST_FRAME);
-	while (!i2c_RX_done);
-	i2c_RX_done = 0;
+	while (!i2c_TX_done);
+	i2c_TX_done = 0;
 	return returnValue;
 }
 
@@ -339,11 +328,10 @@ HAL_StatusTypeDef i2c_Write_Accelerometer(I2C_HandleTypeDef *hi2c, uint16_t DevA
 
 	/*We are now ready to transfer the buffer over the I2C bus*/
 	returnValue = HAL_I2C_Master_Transmit_DMA(hi2c, DevAddress, data, len + 1);
-	while (!i2c_TX_done);
-	i2c_TX_done = 0;
+
 	free(data);
 	/*We wait until the Accelerometer effectively stores data*/
-	while (HAL_I2C_IsDeviceReady(hi2c, DevAddress, 1, HAL_MAX_DELAY) != HAL_OK); //peripheral can only accept the transmission once it finishes doing what it does
+	while (HAL_I2C_Master_Transmit(hi2c, DevAddress, 0, 0, HAL_MAX_DELAY) != HAL_OK); //peripheral can only accept the transmission once it finishes doing what it does
 
 	return HAL_OK;
 }
@@ -355,6 +343,10 @@ void HAL_I2C_MasterRxCpltCallback(I2C_HandleTypeDef *hi2c)
 {
 	i2c_RX_done = 1;
 }
+//void I2C1_EV_IRQHandler(void)
+//{
+//	HAL_I2C_EV_IRQHandler(&hi2c1);
+//}
 /* USER CODE END 4 */
 
 /**
@@ -383,7 +375,7 @@ void Error_Handler(void)
 void assert_failed(uint8_t *file, uint32_t line)
 {
   /* USER CODE BEGIN 6 */
-	/* User can add his own implementation to report the file name and line number,
+  /* User can add his own implementation to report the file name and line number,
      ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
   /* USER CODE END 6 */
 }
