@@ -48,7 +48,14 @@ DMA_HandleTypeDef hdma_i2c1_rx;
 /* USER CODE BEGIN PV */
 uint8_t i2c_RX_done = 0;
 uint8_t i2c_TX_done = 0;
+//uint8_t data_ready = 0; //accelerometer data ready interrupt
+
+uint8_t receive_buffer[20]; //received message buffer, randomly used
+
+uint8_t fifo_count_buffer[2];
 uint16_t fifo_count;
+
+int8_t fifo_buffer[20]; //use FIFO to burst read accel and gyro data
 int16_t accel_xout;
 int16_t accel_yout;
 int16_t accel_zout;
@@ -56,13 +63,12 @@ int16_t gyro_xout;
 int16_t gyro_yout;
 int16_t gyro_zout;
 
-int8_t accel_xout_test_buf[2];
-int8_t accel_yout_test_buf[2];
-int8_t accel_zout_test_buf[2];
-int8_t gyro_xout_test_buf[2];
-int8_t gyro_yout_test_buf[2];
-int8_t gyro_zout_test_buf[2];
-
+uint8_t accel_xout_test_buf[2]; //extracting data without FIFO to compare results with FIFO
+uint8_t accel_yout_test_buf[2];
+uint8_t accel_zout_test_buf[2];
+uint8_t gyro_xout_test_buf[2];
+uint8_t gyro_yout_test_buf[2];
+uint8_t gyro_zout_test_buf[2];
 int16_t accel_xout_test;
 int16_t accel_yout_test;
 int16_t accel_zout_test;
@@ -123,11 +129,6 @@ int main(void)
 	__HAL_DMA_ENABLE(&hdma_i2c1_rx);
 	__HAL_DMA_ENABLE_IT(&hdma_i2c1_tx, DMA_IT_TC | DMA_IT_HT);
 	__enable_irq();
-	//const char wmsg[]="WeloveSTM32!";
-	uint8_t angle_data[] =
-	{ 0x00, 0x00 }; //Angle data buffer, read angle data into this buffer and also write to registers with this buffer for programming
-	uint8_t receive_buffer[20]; //received message buffer, randomly used
-	uint8_t fifo_count_buffer[2];
 	//HAL i2c notes:
 	//address of MPU6050 device is 1101000, but we shift it to left because the transmit and receive functions require that. So we are left with 0xD0
 	//Argument to right of MPU6050_ADDR_LSL1 is the register address, see the register description in onenote.
@@ -152,15 +153,33 @@ int main(void)
 	uint8_t command = 0x00;
 	i2c_Write_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x6B, &command, 1); //turn off sleep mode
 	//using FIFO to do burst reads on gyroscope and accelerometer
-	command = 0x78; //0b01111000
-	i2c_Write_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x23, &command, 1); //only enable the gyroscope and accelerometer to be in the FIFO
 
 	i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x6B, (uint8_t*) receive_buffer, 1); //PWR_MGMT_1, check if device is asleep, if you see 0x40, it is asleep and every register reads 0
 
-	//enable FIFO
-	i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x6A, (uint8_t*) receive_buffer, 1); //check USER_CTRL contents
-	uint8_t test = receive_buffer[0] | 0x40;
-	i2c_Write_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x6A, (uint8_t*) &test, 1); //enable FIFO in USER_CTRL register
+	//Adjust Sample Rate
+	i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x1A, (uint8_t*) receive_buffer, 1); //check digital low pass filter settings, Gyroscope Output Rate = 8kHz when the DLPF is disabled (DLPF_CFG = 0 or 7), and 1kHz when the DLPF is enabled
+	i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x19, (uint8_t*) receive_buffer, 1); //check sample rate divider contents
+	command = 0x1F; //divide by sample rate divider + 1
+	i2c_Write_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x19, (uint8_t*) &command, 1); // adjust sample rate divider
+	i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x19, (uint8_t*) receive_buffer, 1); //check sample rate divider contents
+
+	//initialize/enable FIFO
+	command = 0x78; //0b01111000
+	i2c_Write_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x23, &command, 1); //only enable the gyroscope and accelerometer to be in the FIFO
+	i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x23, (uint8_t*) receive_buffer, 1); //FIFO_EN contents
+
+	command = 0x00;
+	i2c_Write_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x6A, (uint8_t*) &command, 1); //disable FIFO in USER_CTRL register
+	i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x6A, (uint8_t*) receive_buffer, 1); //check USER_CTRL contents, should be 0x00
+
+	command = 0x04;
+	i2c_Write_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x6A, (uint8_t*) &command, 1); // reset FIFO, must do it when FIFO_EN is off
+	i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x6A, (uint8_t*) receive_buffer, 1); //check USER_CTRL contents, should be 0x00 still
+
+	i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x72, (uint8_t*) receive_buffer, 2); //count items in FIFO
+
+	command = 0x40;
+	i2c_Write_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x6A, (uint8_t*) &command, 1); //enable FIFO in USER_CTRL register
 	i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x6A, (uint8_t*) receive_buffer, 1); //USER_CTRL should be 0x40 now
 	i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x72, (uint8_t*) receive_buffer, 2); //count items in FIFO
 
@@ -171,6 +190,9 @@ int main(void)
 
 	i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x3A, (uint8_t*) receive_buffer, 1); //check which interrupt request happened (most important is LSB, DATA_READY_INT)
 	i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x3A, (uint8_t*) receive_buffer, 1);
+
+	//check if interrupt is open drain or push pull via INT_OPEN setting
+	i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x37, (uint8_t*) receive_buffer, 1); //be default it is 0, push-pull, no pullup and no pulldown needed
 
 	//Gyro Config
 	i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x1B, (uint8_t*) receive_buffer, 1); //read GYRO_CONFIG
@@ -192,27 +214,32 @@ int main(void)
 	i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x45, (uint8_t*) receive_buffer, 2); //GYRO_YOUT, 2 bytes
 	i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x47, (uint8_t*) receive_buffer, 2); //GYRO_ZOUT, 2 bytes
 
+	i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x74, (uint8_t*) fifo_buffer, 1024); //flush FIFO buffer for data alignment
 	/* USER CODE END 2 */
 
 	/* Infinite loop */
 	/* USER CODE BEGIN WHILE */
 	while (1)
 	{
-//		i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x3B, (uint8_t*) receive_buffer, 2); //ACCEL_XOUT, 2 bytes
-//		i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x3D, (uint8_t*) receive_buffer, 2); //ACCEL_YOUT, 2 bytes
-//		i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x3F, (uint8_t*) receive_buffer, 2); //ACCEL_ZOUT, 2 bytes
-		//read FIFO
 
-		i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x72, (uint8_t*) fifo_count_buffer, 2); //count items in FIFO
-		fifo_count = (fifo_count_buffer[0] << 8) | fifo_count_buffer[1];
-		i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x74, (uint8_t*) receive_buffer, 12); //read from FIFO buffer
-		accel_xout = (receive_buffer[0] << 8) | receive_buffer[1];
-		accel_yout = (receive_buffer[2] << 8) | receive_buffer[3];
-		accel_zout = (receive_buffer[4] << 8) | receive_buffer[5];
-		gyro_xout = (receive_buffer[6] << 8) | receive_buffer[7];
-		gyro_yout = (receive_buffer[8] << 8) | receive_buffer[9];
-		gyro_zout = (receive_buffer[10] << 8) | receive_buffer[11];
+		//read with FIFO, IMPORTANT: must read 1024 bytes from buffer register to flush buffer for data alignment
+//		i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x72, (uint8_t*) fifo_count_buffer, 2); //count items in FIFO
+//		fifo_count = (fifo_count_buffer[0] << 8) | fifo_count_buffer[1];
+//		if (fifo_count < 12)
+//		{
+//			continue;
+//		}
+//		i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x74, (uint8_t*) fifo_buffer, 12); //read from FIFO buffer
+//		accel_xout = (fifo_buffer[0] << 8) | fifo_buffer[1];
+//		accel_yout = (fifo_buffer[2] << 8) | fifo_buffer[3];
+//		accel_zout = (fifo_buffer[4] << 8) | fifo_buffer[5];
+//		gyro_xout = (fifo_buffer[6] << 8) | fifo_buffer[7];
+//		gyro_yout = (fifo_buffer[8] << 8) | fifo_buffer[9];
+//		gyro_zout = (fifo_buffer[10] << 8) | fifo_buffer[11];
+//
+//		i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x3A, (uint8_t*) receive_buffer, 1); //check which interrupt request happened (most important is LSB, DATA_READY_INT)
 
+		//read without FIFO, IMPORTANT: if using interrupt to synchronize, need a series resistor between interrupt pin on sensor and EXTI pin. Helps to form low pass filter to dampen voltage spikes that mess up the i2c bus.
 		i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x3B, (uint8_t*) accel_xout_test_buf, 2); //ACCEL_XOUT, 2 bytes
 		i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x3D, (uint8_t*) accel_yout_test_buf, 2); //ACCEL_YOUT, 2 bytes
 		i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x3F, (uint8_t*) accel_zout_test_buf, 2); //ACCEL_ZOUT, 2 bytes
@@ -226,8 +253,6 @@ int main(void)
 		gyro_yout_test = (gyro_yout_test_buf[0] << 8) | gyro_yout_test_buf[1];
 		gyro_zout_test = (gyro_zout_test_buf[0] << 8) | gyro_zout_test_buf[1];
 
-//		i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x74, (uint8_t*) receive_buffer, 12); //read from FIFO buffer
-//		i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x74, (uint8_t*) receive_buffer, 12); //read from FIFO buffer
 		/* USER CODE END WHILE */
 
 		/* USER CODE BEGIN 3 */
@@ -354,12 +379,24 @@ static void MX_DMA_Init(void)
  */
 static void MX_GPIO_Init(void)
 {
+	GPIO_InitTypeDef GPIO_InitStruct =
+	{ 0 };
 	/* USER CODE BEGIN MX_GPIO_Init_1 */
 	/* USER CODE END MX_GPIO_Init_1 */
 
 	/* GPIO Ports Clock Enable */
 	__HAL_RCC_GPIOA_CLK_ENABLE();
 	__HAL_RCC_GPIOB_CLK_ENABLE();
+
+	/*Configure GPIO pin : PB4 */
+	GPIO_InitStruct.Pin = GPIO_PIN_4;
+	GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+	GPIO_InitStruct.Pull = GPIO_NOPULL;
+	HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+	/* EXTI interrupt init*/
+	HAL_NVIC_SetPriority(EXTI4_IRQn, 0, 0);
+	HAL_NVIC_EnableIRQ(EXTI4_IRQn);
 
 	/* USER CODE BEGIN MX_GPIO_Init_2 */
 	/* USER CODE END MX_GPIO_Init_2 */
@@ -417,6 +454,13 @@ void HAL_I2C_MasterRxCpltCallback(I2C_HandleTypeDef *hi2c)
 {
 	i2c_RX_done = 1;
 }
+//void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+//{
+//	if (GPIO_Pin == GPIO_PIN_4)
+//	{
+//		data_ready = 1;
+//	}
+//}
 /* USER CODE END 4 */
 
 /**
