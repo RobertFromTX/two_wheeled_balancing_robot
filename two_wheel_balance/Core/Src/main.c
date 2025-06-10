@@ -23,11 +23,37 @@
 /* USER CODE BEGIN Includes */
 #include <string.h>
 #include <stdlib.h>
+#include <math.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
+typedef struct
+{	//struct to extract and organize sensor readings. Interestingly enough, having the struct seems to make code
+//faster because these variables are in contiguous blocks of memory.
 
+//buffers to extract data from sensor with i2c interface
+	uint8_t accel_x_buf[2]; //extracting data without FIFO to compare results with FIFO
+	uint8_t accel_y_buf[2];
+	uint8_t accel_z_buf[2];
+	uint8_t gyro_x_buf[2];
+	uint8_t gyro_y_buf[2];
+	uint8_t gyro_z_buf[2];
+
+	//raw data from mpu6050 sensor, every 4096 counts is 1g when using +/- 8g mode (which we are using for this project in particular).
+	int16_t accel_x;
+	int16_t accel_y;
+	int16_t accel_z;
+	int16_t gyro_x;
+	int16_t gyro_y;
+	int16_t gyro_z;
+
+	//processed data calculated from raw values
+	//euler angles in degrees
+	float yaw;
+	float pitch;
+	float roll;
+} mpu6050_sensor;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -52,30 +78,6 @@ uint8_t i2c_TX_done = 0;
 
 uint8_t receive_buffer[20]; //received message buffer, randomly used
 
-uint8_t fifo_count_buffer[2];
-uint16_t fifo_count;
-
-int8_t fifo_buffer[20]; //use FIFO to burst read accel and gyro data
-int16_t accel_xout;
-int16_t accel_yout;
-int16_t accel_zout;
-int16_t gyro_xout;
-int16_t gyro_yout;
-int16_t gyro_zout;
-
-uint8_t accel_xout_test_buf[2]; //extracting data without FIFO to compare results with FIFO
-uint8_t accel_yout_test_buf[2];
-uint8_t accel_zout_test_buf[2];
-uint8_t gyro_xout_test_buf[2];
-uint8_t gyro_yout_test_buf[2];
-uint8_t gyro_zout_test_buf[2];
-int16_t accel_xout_test;
-int16_t accel_yout_test;
-int16_t accel_zout_test;
-int16_t gyro_xout_test;
-int16_t gyro_yout_test;
-int16_t gyro_zout_test;
-
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -86,7 +88,9 @@ static void MX_I2C1_Init(void);
 /* USER CODE BEGIN PFP */
 HAL_StatusTypeDef i2c_Write_Accelerometer(I2C_HandleTypeDef *hi2c, uint16_t DevAddress, uint8_t MemAddress, uint8_t *pData, uint16_t len); // <-- Add this line here
 HAL_StatusTypeDef i2c_Read_Accelerometer(I2C_HandleTypeDef *hi2c, uint16_t DevAddress, uint8_t regAddress, uint8_t *pData, uint16_t len);
-void mpu6050_init();
+void mpu6050_init(I2C_HandleTypeDef *hi2c);
+void mpu6050_get_raw_measurements(I2C_HandleTypeDef *hi2c, mpu6050_sensor *sensor);
+void calc_accelerometer_tilt(mpu6050_sensor *sensor);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -126,18 +130,19 @@ int main(void)
 	MX_DMA_Init();
 	MX_I2C1_Init();
 	/* USER CODE BEGIN 2 */
-	__HAL_DMA_ENABLE(&hdma_i2c1_tx);
-	__HAL_DMA_ENABLE(&hdma_i2c1_rx);
-	__HAL_DMA_ENABLE_IT(&hdma_i2c1_tx, DMA_IT_TC | DMA_IT_HT);
-	__enable_irq();
+
+//	__HAL_DMA_ENABLE(&hdma_i2c1_tx);
+//	__HAL_DMA_ENABLE(&hdma_i2c1_rx);
+//	__HAL_DMA_ENABLE_IT(&hdma_i2c1_tx, DMA_IT_TC | DMA_IT_HT);
+//	__enable_irq();
 	//HAL i2c notes:
 	//address of MPU6050 device is 1101000, but we shift it to left because the transmit and receive functions require that. So we are left with 0xD0
 	//Argument to right of MPU6050_ADDR_LSL1 is the register address, see the register description in onenote.
-	uint8_t addr[1];
+	uint8_t reg_addr[1];
 	/* We compute the MSB and LSB parts of the memory address */
-	addr[0] = (uint8_t) (0x6A);
+	reg_addr[0] = (uint8_t) (0x6A);
 	HAL_Delay(1000); //delay for init functions to see if it stops glitch of i2c transmission never completing
-	HAL_StatusTypeDef returnValue = HAL_I2C_Master_Transmit_DMA(&hi2c1, MPU6050_ADDR_LSL1, addr, 1);
+	HAL_StatusTypeDef returnValue = HAL_I2C_Master_Transmit_DMA(&hi2c1, MPU6050_ADDR_LSL1, reg_addr, 1);
 	while (HAL_I2C_GetState(&hi2c1) != HAL_I2C_STATE_READY);
 	if (returnValue != HAL_OK)
 	{
@@ -153,7 +158,12 @@ int main(void)
 	i2c_TX_done = 0;
 
 	mpu6050_init(&hi2c1); //write to registers in mpu6050 to configure initial settings
+	mpu6050_sensor sensor1;
 
+	//define starting position
+	sensor1.yaw = 0;
+	sensor1.pitch = 0;
+	sensor1.roll = 0;
 	/* USER CODE END 2 */
 
 	/* Infinite loop */
@@ -162,18 +172,9 @@ int main(void)
 	{
 
 		//read without FIFO, IMPORTANT: if using interrupt to synchronize, need a series resistor between interrupt pin on sensor and EXTI pin. Helps to form low pass filter to dampen voltage spikes that mess up the i2c bus and probably more importantly decrease current that could drive SDA pin low.
-		i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x3B, (uint8_t*) accel_xout_test_buf, 2); //ACCEL_XOUT, 2 bytes
-		i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x3D, (uint8_t*) accel_yout_test_buf, 2); //ACCEL_YOUT, 2 bytes
-		i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x3F, (uint8_t*) accel_zout_test_buf, 2); //ACCEL_ZOUT, 2 bytes
-		i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x43, (uint8_t*) gyro_xout_test_buf, 2); //GYRO_XOUT, 2 bytes
-		i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x45, (uint8_t*) gyro_yout_test_buf, 2); //GYRO_YOUT, 2 bytes
-		i2c_Read_Accelerometer(&hi2c1, MPU6050_ADDR_LSL1, 0x47, (uint8_t*) gyro_zout_test_buf, 2); //GYRO_ZOUT, 2 bytes
-		accel_xout_test = (accel_xout_test_buf[0] << 8) | accel_xout_test_buf[1];
-		accel_yout_test = (accel_yout_test_buf[0] << 8) | accel_yout_test_buf[1];
-		accel_zout_test = (accel_zout_test_buf[0] << 8) | accel_zout_test_buf[1];
-		gyro_xout_test = (gyro_xout_test_buf[0] << 8) | gyro_xout_test_buf[1];
-		gyro_yout_test = (gyro_yout_test_buf[0] << 8) | gyro_yout_test_buf[1];
-		gyro_zout_test = (gyro_zout_test_buf[0] << 8) | gyro_zout_test_buf[1];
+		mpu6050_get_raw_measurements(&hi2c1, &sensor1);
+		calc_accelerometer_tilt(&sensor1);
+		//get tilt measurement from accelerometer, pitch and roll only
 
 		/* USER CODE END WHILE */
 
@@ -328,13 +329,13 @@ static void MX_GPIO_Init(void)
 HAL_StatusTypeDef i2c_Read_Accelerometer(I2C_HandleTypeDef *hi2c, uint16_t DevAddress, uint8_t regAddress, uint8_t *pData, uint16_t len)
 {
 	HAL_StatusTypeDef returnValue;
-	uint8_t addr[1];
+	uint8_t reg_addr[1];
 
 	/* We compute the MSB and LSB parts of the memory address */
-	addr[0] = (uint8_t) (regAddress);
+	reg_addr[0] = (uint8_t) (regAddress);
 
 	/* First we send the memory location address where start reading data */
-	returnValue = HAL_I2C_Master_Seq_Transmit_DMA(hi2c, DevAddress, addr, 1, I2C_FIRST_FRAME);
+	returnValue = HAL_I2C_Master_Seq_Transmit_DMA(hi2c, DevAddress, reg_addr, 1, I2C_FIRST_FRAME);
 //	while (!i2c_TX_done);
 //	i2c_TX_done = 0;
 	while (HAL_I2C_GetState(&hi2c1) != HAL_I2C_STATE_READY);
@@ -351,7 +352,7 @@ HAL_StatusTypeDef i2c_Write_Accelerometer(I2C_HandleTypeDef *hi2c, uint16_t DevA
 	HAL_StatusTypeDef returnValue;
 	uint8_t *data;
 
-	data = (uint8_t*) malloc(sizeof(uint8_t));
+	data = (uint8_t*) malloc(sizeof(uint8_t) * (1 + len));
 	/*We compute the MSB and LSB parts of the memory address*/
 	data[0] = (uint8_t) (regAddress);
 
@@ -442,21 +443,29 @@ void mpu6050_init(I2C_HandleTypeDef *hi2c)
 	i2c_Read_Accelerometer(hi2c, MPU6050_ADDR_LSL1, 0x1C, (uint8_t*) receive_buffer, 1); //read ACCEL_CONFIG
 }
 
-void mpu6050_get_measurements(I2C_HandleTypeDef *hi2c)
+void mpu6050_get_raw_measurements(I2C_HandleTypeDef *hi2c, mpu6050_sensor *sensor)
 {
+	//get raw data from mpu6050 with i2c interface
 	//read without FIFO, IMPORTANT: if using interrupt to synchronize, need a series resistor between interrupt pin on sensor and EXTI pin. Helps to form low pass filter to dampen voltage spikes that mess up the i2c bus and probably more importantly decrease current that could drive SDA pin low.
-	i2c_Read_Accelerometer(hi2c, MPU6050_ADDR_LSL1, 0x3B, (uint8_t*) accel_xout_test_buf, 2); //ACCEL_XOUT, 2 bytes
-	i2c_Read_Accelerometer(hi2c, MPU6050_ADDR_LSL1, 0x3D, (uint8_t*) accel_yout_test_buf, 2); //ACCEL_YOUT, 2 bytes
-	i2c_Read_Accelerometer(hi2c, MPU6050_ADDR_LSL1, 0x3F, (uint8_t*) accel_zout_test_buf, 2); //ACCEL_ZOUT, 2 bytes
-	i2c_Read_Accelerometer(hi2c, MPU6050_ADDR_LSL1, 0x43, (uint8_t*) gyro_xout_test_buf, 2); //GYRO_XOUT, 2 bytes
-	i2c_Read_Accelerometer(hi2c, MPU6050_ADDR_LSL1, 0x45, (uint8_t*) gyro_yout_test_buf, 2); //GYRO_YOUT, 2 bytes
-	i2c_Read_Accelerometer(hi2c, MPU6050_ADDR_LSL1, 0x47, (uint8_t*) gyro_zout_test_buf, 2); //GYRO_ZOUT, 2 bytes
-	accel_xout_test = (accel_xout_test_buf[0] << 8) | accel_xout_test_buf[1];
-	accel_yout_test = (accel_yout_test_buf[0] << 8) | accel_yout_test_buf[1];
-	accel_zout_test = (accel_zout_test_buf[0] << 8) | accel_zout_test_buf[1];
-	gyro_xout_test = (gyro_xout_test_buf[0] << 8) | gyro_xout_test_buf[1];
-	gyro_yout_test = (gyro_yout_test_buf[0] << 8) | gyro_yout_test_buf[1];
-	gyro_zout_test = (gyro_zout_test_buf[0] << 8) | gyro_zout_test_buf[1];
+	i2c_Read_Accelerometer(hi2c, MPU6050_ADDR_LSL1, 0x3B, (uint8_t*) sensor->accel_x_buf, 2); //ACCEL_XOUT, 2 bytes
+	i2c_Read_Accelerometer(hi2c, MPU6050_ADDR_LSL1, 0x3D, (uint8_t*) sensor->accel_y_buf, 2); //ACCEL_YOUT, 2 bytes
+	i2c_Read_Accelerometer(hi2c, MPU6050_ADDR_LSL1, 0x3F, (uint8_t*) sensor->accel_z_buf, 2); //ACCEL_ZOUT, 2 bytes
+	i2c_Read_Accelerometer(hi2c, MPU6050_ADDR_LSL1, 0x43, (uint8_t*) sensor->gyro_x_buf, 2); //GYRO_XOUT, 2 bytes
+	i2c_Read_Accelerometer(hi2c, MPU6050_ADDR_LSL1, 0x45, (uint8_t*) sensor->gyro_y_buf, 2); //GYRO_YOUT, 2 bytes
+	i2c_Read_Accelerometer(hi2c, MPU6050_ADDR_LSL1, 0x47, (uint8_t*) sensor->gyro_z_buf, 2); //GYRO_ZOUT, 2 bytes
+	sensor->accel_x = (sensor->accel_x_buf[0] << 8) | sensor->accel_x_buf[1];
+	sensor->accel_y = (sensor->accel_y_buf[0] << 8) | sensor->accel_y_buf[1];
+	sensor->accel_z = (sensor->accel_z_buf[0] << 8) | sensor->accel_z_buf[1];
+	sensor->gyro_x = (sensor->gyro_x_buf[0] << 8) | sensor->gyro_x_buf[1];
+	sensor->gyro_y = (sensor->gyro_y_buf[0] << 8) | sensor->gyro_y_buf[1];
+	sensor->gyro_z = (sensor->gyro_z_buf[0] << 8) | sensor->gyro_z_buf[1];
+}
+
+void calc_accelerometer_tilt(mpu6050_sensor *sensor)
+{
+	sensor->pitch = asin((float) sensor->accel_x / (float) 4096); //get pitch in radians
+	sensor->roll = asin(((float) -sensor->accel_y) / (4096 * cos(sensor->pitch))) * (180 / M_PI); //get roll and convert to degrees
+	sensor->pitch = sensor->pitch * (180 / M_PI); //convert to degrees after using it pitch in previous calculation as radians
 }
 /* USER CODE END 4 */
 
