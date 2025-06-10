@@ -132,11 +132,11 @@ int main(void)
 	//HAL i2c notes:
 	//address of MPU6050 device is 1101000, but we shift it to left because the transmit and receive functions require that. So we are left with 0xD0
 	//Argument to right of MPU6050_ADDR_LSL1 is the register address, see the register description in onenote.
-	uint8_t addr[1];
+	uint8_t reg_addr[1];
 	/* We compute the MSB and LSB parts of the memory address */
-	addr[0] = (uint8_t) (0x6A);
+	reg_addr[0] = (uint8_t) (0x6A);
 	HAL_Delay(1000); //delay for init functions to see if it stops glitch of i2c transmission never completing
-	HAL_StatusTypeDef returnValue = HAL_I2C_Master_Transmit_DMA(&hi2c1, MPU6050_ADDR_LSL1, addr, 1);
+	HAL_StatusTypeDef returnValue = HAL_I2C_Master_Transmit_DMA(&hi2c1, MPU6050_ADDR_LSL1, reg_addr, 1);
 	while (HAL_I2C_GetState(&hi2c1) != HAL_I2C_STATE_READY);
 	if (returnValue != HAL_OK)
 	{
@@ -406,13 +406,13 @@ static void MX_GPIO_Init(void)
 HAL_StatusTypeDef i2c_Read_Accelerometer(I2C_HandleTypeDef *hi2c, uint16_t DevAddress, uint8_t regAddress, uint8_t *pData, uint16_t len)
 {
 	HAL_StatusTypeDef returnValue;
-	uint8_t addr[1];
+	uint8_t reg_addr[1];
 
 	/* We compute the MSB and LSB parts of the memory address */
-	addr[0] = (uint8_t) (regAddress);
+	reg_addr[0] = (uint8_t) (regAddress);
 
 	/* First we send the memory location address where start reading data */
-	returnValue = HAL_I2C_Master_Seq_Transmit_DMA(hi2c, DevAddress, addr, 1, I2C_FIRST_FRAME);
+	returnValue = HAL_I2C_Master_Seq_Transmit_DMA(hi2c, DevAddress, reg_addr, 1, I2C_FIRST_FRAME);
 //	while (!i2c_TX_done);
 //	i2c_TX_done = 0;
 	while (HAL_I2C_GetState(&hi2c1) != HAL_I2C_STATE_READY);
@@ -429,7 +429,7 @@ HAL_StatusTypeDef i2c_Write_Accelerometer(I2C_HandleTypeDef *hi2c, uint16_t DevA
 	HAL_StatusTypeDef returnValue;
 	uint8_t *data;
 
-	data = (uint8_t*) malloc(sizeof(uint8_t));
+	data = (uint8_t*) malloc(sizeof(uint8_t) * (1 + len));
 	/*We compute the MSB and LSB parts of the memory address*/
 	data[0] = (uint8_t) (regAddress);
 
