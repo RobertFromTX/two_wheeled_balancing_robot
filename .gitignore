@@ -26,3 +26,11 @@ Release/
 #references
 Shane_Ross_MATLAB_code/
 Steve_Brunton_MATLAB_code/
+
+#libraries
+en.stm32cubef3
+en.patch-cubef3-v1-11-5.zip
+en.stm32cubef3.zip
+
+#scratchwork projects
+arm_math_test/

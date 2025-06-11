@@ -24,6 +24,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
+#include "arm_math.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -74,7 +75,7 @@ DMA_HandleTypeDef hdma_i2c1_rx;
 /* USER CODE BEGIN PV */
 uint8_t i2c_RX_done = 0;
 uint8_t i2c_TX_done = 0;
-//uint8_t data_ready = 0; //accelerometer data ready interrupt
+uint8_t data_ready = 0; //accelerometer data ready interrupt
 
 uint8_t receive_buffer[20]; //received message buffer, randomly used
 
@@ -170,11 +171,19 @@ int main(void)
 	/* USER CODE BEGIN WHILE */
 	while (1)
 	{
+		if (data_ready)
+		{
+			HAL_NVIC_DisableIRQ(EXTI4_IRQn);
+			//read without FIFO, IMPORTANT: if using interrupt to synchronize, need a series resistor between interrupt pin on sensor and EXTI pin. Helps to form low pass filter to dampen voltage spikes that mess up the i2c bus and probably more importantly decrease current that could drive SDA pin low.
+			mpu6050_get_raw_measurements(&hi2c1, &sensor1);
 
-		//read without FIFO, IMPORTANT: if using interrupt to synchronize, need a series resistor between interrupt pin on sensor and EXTI pin. Helps to form low pass filter to dampen voltage spikes that mess up the i2c bus and probably more importantly decrease current that could drive SDA pin low.
-		mpu6050_get_raw_measurements(&hi2c1, &sensor1);
-		calc_accelerometer_tilt(&sensor1);
-		//get tilt measurement from accelerometer, pitch and roll only
+			//get_kalman_prediction();
+			calc_accelerometer_tilt(&sensor1);
+			//get_kalman_estimate();
+			//get tilt measurement from accelerometer, pitch and roll only
+			data_ready = 0;
+			HAL_NVIC_EnableIRQ(EXTI4_IRQn);
+		}
 
 		/* USER CODE END WHILE */
 
@@ -377,13 +386,13 @@ void HAL_I2C_MasterRxCpltCallback(I2C_HandleTypeDef *hi2c)
 {
 	i2c_RX_done = 1;
 }
-//void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
-//{
-//	if (GPIO_Pin == GPIO_PIN_4)
-//	{
-//		data_ready = 1;
-//	}
-//}
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+	if (GPIO_Pin == GPIO_PIN_4)
+	{
+		data_ready = 1;
+	}
+}
 
 void mpu6050_init(I2C_HandleTypeDef *hi2c)
 {
@@ -433,13 +442,13 @@ void mpu6050_init(I2C_HandleTypeDef *hi2c)
 
 	//Gyro Config
 	i2c_Read_Accelerometer(hi2c, MPU6050_ADDR_LSL1, 0x1B, (uint8_t*) receive_buffer, 1); //read GYRO_CONFIG
-	command = 0x08;
-	i2c_Write_Accelerometer(hi2c, MPU6050_ADDR_LSL1, 0x1B, &command, 1); // +/- 500 degrees/second
+	command = 0x18;
+	i2c_Write_Accelerometer(hi2c, MPU6050_ADDR_LSL1, 0x1B, &command, 1); // +/- 1000 degrees/second full range, each 32.8 counts is 1 degree/second, all selftest off
 	i2c_Read_Accelerometer(hi2c, MPU6050_ADDR_LSL1, 0x1B, (uint8_t*) receive_buffer, 1); //read GYRO_CONFIG
 	//Accelerometer Config
 	i2c_Read_Accelerometer(hi2c, MPU6050_ADDR_LSL1, 0x1C, (uint8_t*) receive_buffer, 1); //read ACCEL_CONFIG
 	command = 0x10;
-	i2c_Write_Accelerometer(hi2c, MPU6050_ADDR_LSL1, 0x1C, &command, 1); // +/- 8g, all self test off
+	i2c_Write_Accelerometer(hi2c, MPU6050_ADDR_LSL1, 0x1C, &command, 1); // +/- 8g, every 4096 counts is 1g, all self test off
 	i2c_Read_Accelerometer(hi2c, MPU6050_ADDR_LSL1, 0x1C, (uint8_t*) receive_buffer, 1); //read ACCEL_CONFIG
 }
 
