@@ -24,16 +24,17 @@
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
+#include <stm32f3xx_hal_cortex.h>
 #include "arm_math.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
 typedef struct
-{	//struct to extract and organize sensor readings. Interestingly enough, having the struct seems to make code
+{ //struct to extract and organize sensor readings. Interestingly enough, having the struct seems to make code
 //faster because these variables are in contiguous blocks of memory.
 
-//buffers to extract data from sensor with i2c interface
+	//buffers to extract data from sensor with i2c interface
 	uint8_t accel_x_buf[2]; //extracting data without FIFO to compare results with FIFO
 	uint8_t accel_y_buf[2];
 	uint8_t accel_z_buf[2];
@@ -49,17 +50,44 @@ typedef struct
 	int16_t gyro_y;
 	int16_t gyro_z;
 
-	//processed data calculated from raw values
-	//euler angles in degrees
-	float yaw;
-	float pitch;
-	float roll;
-} mpu6050_sensor;
+	//processed data calculated from raw values, not as accurate as the kalman_angle from kalman filter
+	float32_t yaw; //euler angles in degrees
+	float32_t pitch;
+	float32_t roll;
+
+	float32_t wx; //angular velocities
+	float32_t wy;
+	float32_t wz;
+} mpu6050_sensor_data;
+
+typedef struct
+{
+	//struct to extract and organize sensor readings. Interestingly enough, having the struct seems to make code
+	//faster because these variables are in contiguous blocks of memory.
+	float32_t matrix_A[4][4];
+	float32_t matrix_B[4][1];
+	float32_t matrix_x[4][1];	//euler parameters (quaternion), the state of the system
+	float32_t matrix_Ax[4][1];
+	float32_t matrix_C[4][4];
+
+	arm_matrix_instance_f32 matrix_A_arm;
+	arm_matrix_instance_f32 matrix_B_arm;
+	arm_matrix_instance_f32 matrix_x_arm;
+	arm_matrix_instance_f32 matrix_Ax_arm;
+	arm_matrix_instance_f32 matrix_C_arm;
+
+	//euler angles, output of kalman filter, should be more accurate than yaw, pitch, roll of sensor_data
+	float32_t kalman_yaw;
+	float32_t kalman_pitch;
+	float32_t kalman_roll;
+
+} kalman_filter;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define MPU6050_ADDR_LSL1	0xD0
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -79,6 +107,8 @@ uint8_t data_ready = 0; //accelerometer data ready interrupt
 
 uint8_t receive_buffer[20]; //received message buffer, randomly used
 
+const float32_t dt = 0.001;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -89,9 +119,20 @@ static void MX_I2C1_Init(void);
 /* USER CODE BEGIN PFP */
 HAL_StatusTypeDef i2c_Write_Accelerometer(I2C_HandleTypeDef *hi2c, uint16_t DevAddress, uint8_t MemAddress, uint8_t *pData, uint16_t len); // <-- Add this line here
 HAL_StatusTypeDef i2c_Read_Accelerometer(I2C_HandleTypeDef *hi2c, uint16_t DevAddress, uint8_t regAddress, uint8_t *pData, uint16_t len);
+
+//functions that communicate to the physical sensor using i2c interface
 void mpu6050_init(I2C_HandleTypeDef *hi2c);
-void mpu6050_get_raw_measurements(I2C_HandleTypeDef *hi2c, mpu6050_sensor *sensor);
-void calc_accelerometer_tilt(mpu6050_sensor *sensor);
+void mpu6050_get_raw_measurements(I2C_HandleTypeDef *hi2c, mpu6050_sensor_data *sensor_data);
+
+//functions that modify sensor_data instances
+void sensor_data_init(mpu6050_sensor_data *sensor_data); //sets yaw, pitch, roll to 0, 0, 0
+void calc_accelerometer_tilt(mpu6050_sensor_data *sensor_data); //changes pitch and roll according to accelerometer tilt. Basically injects accelerometer data into kalman filter.
+
+//modifies kalman filter instances
+void kalman_filter_init(kalman_filter *filter); //sets initial kalman filter yaw, pitch, roll outputs to 0, 0, 0
+void get_kalman_prediction(kalman_filter *filter, mpu6050_sensor_data *sensor_data);
+void get_kalman_estimate(kalman_filter *filter, mpu6050_sensor_data *sensor_data);
+void update_kalman_filter(kalman_filter *filter, mpu6050_sensor_data *sensor_data);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -136,9 +177,9 @@ int main(void)
 //	__HAL_DMA_ENABLE(&hdma_i2c1_rx);
 //	__HAL_DMA_ENABLE_IT(&hdma_i2c1_tx, DMA_IT_TC | DMA_IT_HT);
 //	__enable_irq();
-	//HAL i2c notes:
-	//address of MPU6050 device is 1101000, but we shift it to left because the transmit and receive functions require that. So we are left with 0xD0
-	//Argument to right of MPU6050_ADDR_LSL1 is the register address, see the register description in onenote.
+//HAL i2c notes:
+//address of MPU6050 device is 1101000, but we shift it to left because the transmit and receive functions require that. So we are left with 0xD0
+//Argument to right of MPU6050_ADDR_LSL1 is the register address, see the register description in onenote.
 	uint8_t reg_addr[1];
 	/* We compute the MSB and LSB parts of the memory address */
 	reg_addr[0] = (uint8_t) (0x6A);
@@ -150,21 +191,22 @@ int main(void)
 		Error_Handler();
 	}
 	if (__HAL_DMA_GET_FLAG(&hdma_i2c1_tx, (0x00000002U)))
-	{  // Transfer error
+	{ // Transfer error
 		printf("DMA Transfer Error\n");
-		// Handle error here
+// Handle error here
 	}
 	HAL_DMA_IRQHandler(&hdma_i2c1_tx);
 	while (!i2c_TX_done);
 	i2c_TX_done = 0;
 
 	mpu6050_init(&hi2c1); //write to registers in mpu6050 to configure initial settings
-	mpu6050_sensor sensor1;
+	mpu6050_sensor_data sensor_data_1;
+	kalman_filter filter1;
 
 	//define starting position
-	sensor1.yaw = 0;
-	sensor1.pitch = 0;
-	sensor1.roll = 0;
+	sensor_data_init(&sensor_data_1); //likely not necessary
+	kalman_filter_init(&filter1); //necessary
+
 	/* USER CODE END 2 */
 
 	/* Infinite loop */
@@ -174,13 +216,17 @@ int main(void)
 		if (data_ready)
 		{
 			HAL_NVIC_DisableIRQ(EXTI4_IRQn);
-			//read without FIFO, IMPORTANT: if using interrupt to synchronize, need a series resistor between interrupt pin on sensor and EXTI pin. Helps to form low pass filter to dampen voltage spikes that mess up the i2c bus and probably more importantly decrease current that could drive SDA pin low.
-			mpu6050_get_raw_measurements(&hi2c1, &sensor1);
 
-			//get_kalman_prediction();
-			calc_accelerometer_tilt(&sensor1);
-			//get_kalman_estimate();
-			//get tilt measurement from accelerometer, pitch and roll only
+//get accelerometer and gyro data and store in struct.
+//reading without FIFO, IMPORTANT: if using interrupt to synchronize, need a series resistor between interrupt pin on sensor and EXTI pin. Helps to form low pass filter to dampen voltage spikes that mess up the i2c bus and probably more importantly decrease current that could drive SDA pin low.
+			mpu6050_get_raw_measurements(&hi2c1, &sensor_data_1);
+
+//get tilt measurement from accelerometer, pitch and roll only
+			calc_accelerometer_tilt(&sensor_data_1);
+
+//get estimate(output of b0,b1,b2,b3 euler parameters) from kalman filter
+			update_kalman_filter(&filter1, &sensor_data_1);
+
 			data_ready = 0;
 			HAL_NVIC_EnableIRQ(EXTI4_IRQn);
 		}
@@ -199,11 +245,11 @@ int main(void)
 void SystemClock_Config(void)
 {
 	RCC_OscInitTypeDef RCC_OscInitStruct =
-	{ 0 };
+			{0};
 	RCC_ClkInitTypeDef RCC_ClkInitStruct =
-	{ 0 };
+			{0};
 	RCC_PeriphCLKInitTypeDef PeriphClkInit =
-	{ 0 };
+			{0};
 
 	/** Initializes the RCC Oscillators according to the specified parameters
 	 * in the RCC_OscInitTypeDef structure.
@@ -312,7 +358,7 @@ static void MX_DMA_Init(void)
 static void MX_GPIO_Init(void)
 {
 	GPIO_InitTypeDef GPIO_InitStruct =
-	{ 0 };
+			{0};
 	/* USER CODE BEGIN MX_GPIO_Init_1 */
 	/* USER CODE END MX_GPIO_Init_1 */
 
@@ -348,7 +394,7 @@ HAL_StatusTypeDef i2c_Read_Accelerometer(I2C_HandleTypeDef *hi2c, uint16_t DevAd
 //	while (!i2c_TX_done);
 //	i2c_TX_done = 0;
 	while (HAL_I2C_GetState(&hi2c1) != HAL_I2C_STATE_READY);
-	//	uint32_t i2c_error = HAL_I2C_GetError(&hi2c1);
+//	uint32_t i2c_error = HAL_I2C_GetError(&hi2c1);
 	/* Next we can retrieve the data from EEPROM */
 	returnValue = HAL_I2C_Master_Seq_Receive_DMA(hi2c, DevAddress, pData, len, I2C_LAST_FRAME);
 	while (!i2c_RX_done);
@@ -452,29 +498,99 @@ void mpu6050_init(I2C_HandleTypeDef *hi2c)
 	i2c_Read_Accelerometer(hi2c, MPU6050_ADDR_LSL1, 0x1C, (uint8_t*) receive_buffer, 1); //read ACCEL_CONFIG
 }
 
-void mpu6050_get_raw_measurements(I2C_HandleTypeDef *hi2c, mpu6050_sensor *sensor)
+void mpu6050_get_raw_measurements(I2C_HandleTypeDef *hi2c, mpu6050_sensor_data *sensor_data)
 {
 	//get raw data from mpu6050 with i2c interface
 	//read without FIFO, IMPORTANT: if using interrupt to synchronize, need a series resistor between interrupt pin on sensor and EXTI pin. Helps to form low pass filter to dampen voltage spikes that mess up the i2c bus and probably more importantly decrease current that could drive SDA pin low.
-	i2c_Read_Accelerometer(hi2c, MPU6050_ADDR_LSL1, 0x3B, (uint8_t*) sensor->accel_x_buf, 2); //ACCEL_XOUT, 2 bytes
-	i2c_Read_Accelerometer(hi2c, MPU6050_ADDR_LSL1, 0x3D, (uint8_t*) sensor->accel_y_buf, 2); //ACCEL_YOUT, 2 bytes
-	i2c_Read_Accelerometer(hi2c, MPU6050_ADDR_LSL1, 0x3F, (uint8_t*) sensor->accel_z_buf, 2); //ACCEL_ZOUT, 2 bytes
-	i2c_Read_Accelerometer(hi2c, MPU6050_ADDR_LSL1, 0x43, (uint8_t*) sensor->gyro_x_buf, 2); //GYRO_XOUT, 2 bytes
-	i2c_Read_Accelerometer(hi2c, MPU6050_ADDR_LSL1, 0x45, (uint8_t*) sensor->gyro_y_buf, 2); //GYRO_YOUT, 2 bytes
-	i2c_Read_Accelerometer(hi2c, MPU6050_ADDR_LSL1, 0x47, (uint8_t*) sensor->gyro_z_buf, 2); //GYRO_ZOUT, 2 bytes
-	sensor->accel_x = (sensor->accel_x_buf[0] << 8) | sensor->accel_x_buf[1];
-	sensor->accel_y = (sensor->accel_y_buf[0] << 8) | sensor->accel_y_buf[1];
-	sensor->accel_z = (sensor->accel_z_buf[0] << 8) | sensor->accel_z_buf[1];
-	sensor->gyro_x = (sensor->gyro_x_buf[0] << 8) | sensor->gyro_x_buf[1];
-	sensor->gyro_y = (sensor->gyro_y_buf[0] << 8) | sensor->gyro_y_buf[1];
-	sensor->gyro_z = (sensor->gyro_z_buf[0] << 8) | sensor->gyro_z_buf[1];
+	i2c_Read_Accelerometer(hi2c, MPU6050_ADDR_LSL1, 0x3B, (uint8_t*) sensor_data->accel_x_buf, 2); //ACCEL_XOUT, 2 bytes
+	i2c_Read_Accelerometer(hi2c, MPU6050_ADDR_LSL1, 0x3D, (uint8_t*) sensor_data->accel_y_buf, 2); //ACCEL_YOUT, 2 bytes
+	i2c_Read_Accelerometer(hi2c, MPU6050_ADDR_LSL1, 0x3F, (uint8_t*) sensor_data->accel_z_buf, 2); //ACCEL_ZOUT, 2 bytes
+	i2c_Read_Accelerometer(hi2c, MPU6050_ADDR_LSL1, 0x43, (uint8_t*) sensor_data->gyro_x_buf, 2); //GYRO_XOUT, 2 bytes
+	i2c_Read_Accelerometer(hi2c, MPU6050_ADDR_LSL1, 0x45, (uint8_t*) sensor_data->gyro_y_buf, 2); //GYRO_YOUT, 2 bytes
+	i2c_Read_Accelerometer(hi2c, MPU6050_ADDR_LSL1, 0x47, (uint8_t*) sensor_data->gyro_z_buf, 2); //GYRO_ZOUT, 2 bytes
+	sensor_data->accel_x = (sensor_data->accel_x_buf[0] << 8) | sensor_data->accel_x_buf[1];
+	sensor_data->accel_y = (sensor_data->accel_y_buf[0] << 8) | sensor_data->accel_y_buf[1];
+	sensor_data->accel_z = (sensor_data->accel_z_buf[0] << 8) | sensor_data->accel_z_buf[1];
+	sensor_data->gyro_x = (sensor_data->gyro_x_buf[0] << 8) | sensor_data->gyro_x_buf[1];
+	sensor_data->gyro_y = (sensor_data->gyro_y_buf[0] << 8) | sensor_data->gyro_y_buf[1];
+	sensor_data->gyro_z = (sensor_data->gyro_z_buf[0] << 8) | sensor_data->gyro_z_buf[1];
 }
 
-void calc_accelerometer_tilt(mpu6050_sensor *sensor)
+void sensor_data_init(mpu6050_sensor_data *sensor_data)
 {
-	sensor->pitch = asin((float) sensor->accel_x / (float) 4096); //get pitch in radians
-	sensor->roll = asin(((float) -sensor->accel_y) / (4096 * cos(sensor->pitch))) * (180 / M_PI); //get roll and convert to degrees
-	sensor->pitch = sensor->pitch * (180 / M_PI); //convert to degrees after using it pitch in previous calculation as radians
+	//initialize values that will be calculated later anyways, probably not necessary to do
+	sensor_data->yaw = 0;
+	sensor_data->pitch = 0;
+	sensor_data->roll = 0;
+}
+void calc_accelerometer_tilt(mpu6050_sensor_data *sensor_data)
+{
+	sensor_data->pitch = asin((float) sensor_data->accel_x / (float) 4096); //get pitch in radians
+	sensor_data->roll = asin(((float) -sensor_data->accel_y) / (4096 * cos(sensor_data->pitch))) * (180 / M_PI); //get roll and convert to degrees
+	sensor_data->pitch = sensor_data->pitch * (180 / M_PI); //convert to degrees after using it pitch in previous calculation as radians
+	//for the yaw, we use previous quaternion/euler parameter output from kalman filter and convert it to euler angle that is used as yaw
+}
+void get_euler_parameters(kalman_filter *filter)
+{
+	float32_t c1 = cos(filter->kalman_yaw / 2);
+	float32_t s1 = sin(filter->kalman_yaw / 2);
+	float32_t c2 = cos(filter->kalman_pitch / 2);
+	float32_t s2 = sin(filter->kalman_pitch / 2);
+	float32_t c3 = cos(filter->kalman_roll / 2);
+	float32_t s3 = sin(filter->kalman_roll / 2);
+
+	filter->matrix_x[0][0] = c1 * c2 * c3 + s1 * s2 * s3;
+	filter->matrix_x[1][0] = c1 * c2 * s3 - s1 * s2 * c3;
+	filter->matrix_x[2][0] = c1 * s2 * c3 + s1 * c2 * s3;
+	filter->matrix_x[3][0] = s1 * c2 * c3 - c1 * s2 * s3;
+
+}
+void kalman_filter_init(kalman_filter *filter)
+{
+	//define starting position, definately necessary to get first output from kalman filter
+	filter->kalman_yaw = 0;
+	filter->kalman_yaw = 0;
+	filter->kalman_yaw = 0;
+
+	memcpy(&(filter->matrix_x[0]), ((float32_t[4]){1, 0, 0, 0}), 4 * sizeof(float32_t)); //quaternion corresponding to yaw, pitch, roll above is {1,0,0,0}
+
+	//initialize arm matrix instances
+	arm_mat_init_f32(&filter->matrix_A_arm, 4, 4, &filter->matrix_A[0][0]);
+	arm_mat_init_f32(&filter->matrix_B_arm, 4, 1, &filter->matrix_B[0][0]);
+	arm_mat_init_f32(&filter->matrix_x_arm, 4, 1, &filter->matrix_x[0][0]);
+	arm_mat_init_f32(&filter->matrix_Ax_arm, 4, 1, &filter->matrix_Ax[0][0]);
+}
+void get_kalman_prediction(kalman_filter *filter, mpu6050_sensor_data *sensor_data)
+{
+	//do matrix multiplication to predict angular positions state (a priori estimate)
+	arm_status arm_status_temp = arm_mat_mult_f32(&filter->matrix_A, &filter->matrix_x, &filter->matrix_Ax_arm);
+}
+void get_kalman_estimate(kalman_filter *filter, mpu6050_sensor_data *sensor_data)
+{
+
+}
+void update_kalman_filter(kalman_filter *filter, mpu6050_sensor_data *sensor_data)
+{
+	//update angular velocities in radians
+	sensor_data->wx = sensor_data->gyro_x / (float32_t) 1879.301568; //1 degree for every 32.8 counts -> 1 radian for every 1879.301568 counts
+	sensor_data->wy = sensor_data->gyro_y / (float32_t) 1879.301568;
+	sensor_data->wz = sensor_data->gyro_z / (float32_t) 1879.301568;
+
+	//using pitch and roll from accelerometer measurement to "inject" into kalman filter
+	filter->kalman_pitch = sensor_data->pitch;
+	filter->kalman_roll = sensor_data->roll;
+
+	//update discrete A matrix. Using zero order hold estimation: A_discrete = I + A_analog * dt
+	//dt is periods
+
+	/*  A_analog = 1/2*[ 0   -wx  -wy  -wz ;
+	 *					 wx   0    wz  -wy ;
+	 *					 wy  -wz   0    wx ;
+	 *					 wz   wy  -wx   0  ]; */
+	memcpy(&(filter->matrix_A[0][0]), ((float32_t[4][4]){{1, -sensor_data->wx * dt / 2, -sensor_data->wy * dt / 2, -sensor_data->wz * dt / 2}, {sensor_data->wx * dt / 2, 1, sensor_data->wz * dt / 2, -sensor_data->wy * dt / 2}, {sensor_data->wy * dt / 2, -sensor_data->wz * dt / 2, 1, sensor_data->wx * dt / 2}, {sensor_data->wz * dt / 2, sensor_data->wy * dt / 2, -sensor_data->wx * dt / 2, 1}}), 4 * 4 * sizeof(float32_t));
+
+	get_kalman_prediction(filter, sensor_data);
+	get_kalman_estimate(filter, sensor_data);
 }
 /* USER CODE END 4 */
 
