@@ -598,12 +598,12 @@ void get_kalman_prediction(kalman_filter *filter, mpu6050_sensor_data *sensor_da
 
 	//predict error covariance "P"
 	arm_status_temp = arm_mat_mult_f32(&filter->matrix_A_arm, &filter->matrix_P_arm, &filter->matrix_P_arm); //matrix_P_arm = A*P_{k-1}
-	float32_t matrix_AT[4][4];
+	float32_t matrix_AT[4][4]; //getting transpose of A matrix
 	arm_matrix_instance_f32 matrix_AT_arm;
 	arm_mat_init_f32(&matrix_AT_arm, 4, 4, &matrix_AT[0][0]);
 	arm_status_temp = arm_mat_trans_f32(&filter->matrix_A_arm, &matrix_AT_arm); //calculate transpose of A
 	arm_status_temp = arm_mat_mult_f32(&filter->matrix_P_arm, &matrix_AT_arm, &filter->matrix_P_arm); //matrix_P_arm = A*P_{k-1}*A^{T}
-	arm_mat_add_f32(&filter->matrix_P_arm, &filter->matrix_Q_arm, &filter->matrix_P_arm); //matrix_P_arm = A*P_{k-1}*A^{T} + Q = Pk(a priori)
+	arm_mat_add_f32(&filter->matrix_P_arm, &filter->matrix_Q_arm, &filter->matrix_P_arm); //matrix_P_arm = A*P_{k-1}*A^{T} + Q = P_{k} (a priori)
 
 }
 void get_kalman_estimate(kalman_filter *filter, mpu6050_sensor_data *sensor_data)
@@ -636,7 +636,21 @@ void update_kalman_filter(kalman_filter *filter, mpu6050_sensor_data *sensor_dat
 }
 void compute_kalman_gain(kalman_filter *filter)
 {
+	float32_t matrix_HT[4][4]; //getting transpose of H matrix
+	arm_matrix_instance_f32 matrix_HT_arm;
+	arm_mat_init_f32(&matrix_HT_arm, 4, 4, &matrix_HT[0][0]);
+	arm_status arm_status_temp = arm_mat_trans_f32(&filter->matrix_H_arm, &matrix_HT_arm); //calculate transpose of H
+	arm_status_temp = arm_mat_mult_f32(&filter->matrix_P_arm, &matrix_HT_arm, &filter->matrix_K_arm); //matrix_K_arm = P * H_{T}
 
+	float32_t matrix_inv_part[4][4]; //will be equal to inv(H * P_{k} * H^{T} + R)
+	arm_matrix_instance_f32 matrix_inv_part_arm;
+	arm_mat_init_f32(&matrix_inv_part_arm, 4, 4, &matrix_inv_part[0][0]);
+	arm_status_temp = arm_mat_mult_f32(&filter->matrix_H_arm, &filter->matrix_P_arm, &matrix_inv_part_arm); //matrix_inv_part_arm = H * P_{k}
+	arm_status_temp = arm_mat_mult_f32(&matrix_inv_part_arm, &matrix_HT_arm, &matrix_inv_part_arm); // matrix_inv_part_arm = H * P_{k} * H^{T}
+	arm_status_temp = arm_mat_add_f32(&matrix_inv_part_arm, &filter->matrix_R_arm, &matrix_inv_part_arm); // matrix_inv_part_arm = H * P_{k} * H^{T} + R
+	arm_status_temp = arm_mat_inverse_f32(&matrix_inv_part_arm, &matrix_inv_part_arm); //matrix_inv_part_arm = inv(H * P_{k} * H^{T} + R)
+
+	arm_status_temp = arm_mat_mult_f32(&filter->matrix_K_arm, &matrix_inv_part_arm, &filter->matrix_K_arm); //matrix_K_arm = P * H_{T} * inv(H * P_{k} * H^{T} + R)
 }
 /* USER CODE END 4 */
 
