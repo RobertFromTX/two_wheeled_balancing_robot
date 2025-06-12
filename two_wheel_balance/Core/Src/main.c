@@ -67,25 +67,31 @@ typedef struct
 	//state space matrices
 	float32_t matrix_A[4][4]; //state transition matrix
 	float32_t matrix_B[4][1];
-	float32_t matrix_x[4][1];	//euler parameters (quaternion), the state of the system
-	float32_t matrix_Ax[4][1];
+	float32_t matrix_xp[4][1];	//euler parameters (quaternion), the predicted state of the system
+	float32_t matrix_Axp[4][1]; // holds result of A * xp
+	float32_t matrix_x[4][1]; //state of kalman filter, used to output final filtered measurement of kalman filter
 
 	float32_t matrix_H[4][4]; //observation matrix, how x matrix (the state) relates to the output/measurement z
+	float32_t matrix_z[4][1]; //combined measured output of kalman filter and accelerometer tilt data
 
 	float32_t matrix_Q[4][4]; //covariance matrix of process noise/disturbance
 	float32_t matrix_R[4][4]; //covariance matrix of measurement noise
-	float32_t matrix_P[4][4]; //error covariance
+	float32_t matrix_Pp[4][4]; //predicted error covariance
+	float32_t matrix_P[4][4]; //estimated error covariance
 
 	float32_t matrix_K[4][4]; //Kalman gain
 
 	//arm instances
 	arm_matrix_instance_f32 matrix_A_arm;
 	arm_matrix_instance_f32 matrix_B_arm;
+	arm_matrix_instance_f32 matrix_xp_arm;
+	arm_matrix_instance_f32 matrix_Axp_arm;
 	arm_matrix_instance_f32 matrix_x_arm;
-	arm_matrix_instance_f32 matrix_Ax_arm;
 	arm_matrix_instance_f32 matrix_H_arm;
+	arm_matrix_instance_f32 matrix_z_arm;
 	arm_matrix_instance_f32 matrix_Q_arm;
 	arm_matrix_instance_f32 matrix_R_arm;
+	arm_matrix_instance_f32 matrix_Pp_arm;
 	arm_matrix_instance_f32 matrix_P_arm;
 	arm_matrix_instance_f32 matrix_K_arm;
 
@@ -144,9 +150,10 @@ void calc_accelerometer_tilt(mpu6050_sensor_data *sensor_data); //changes pitch 
 //modifies kalman filter instances
 void kalman_filter_init(kalman_filter *filter); //sets initial kalman filter yaw, pitch, roll outputs to 0, 0, 0
 void get_kalman_prediction(kalman_filter *filter, mpu6050_sensor_data *sensor_data);
+void compute_kalman_gain(kalman_filter *filter);
 void get_kalman_estimate(kalman_filter *filter, mpu6050_sensor_data *sensor_data);
 void update_kalman_filter(kalman_filter *filter, mpu6050_sensor_data *sensor_data);
-void compute_kalman_gain(kalman_filter *filter);
+void update_ypr(kalman_filter *filter);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -553,10 +560,10 @@ void get_euler_parameters(kalman_filter *filter)
 	float32_t c3 = cos(filter->kalman_roll / 2);
 	float32_t s3 = sin(filter->kalman_roll / 2);
 
-	filter->matrix_x[0][0] = c1 * c2 * c3 + s1 * s2 * s3;
-	filter->matrix_x[1][0] = c1 * c2 * s3 - s1 * s2 * c3;
-	filter->matrix_x[2][0] = c1 * s2 * c3 + s1 * c2 * s3;
-	filter->matrix_x[3][0] = s1 * c2 * c3 - c1 * s2 * s3;
+	filter->matrix_z[0][0] = c1 * c2 * c3 + s1 * s2 * s3;
+	filter->matrix_z[1][0] = c1 * c2 * s3 - s1 * s2 * c3;
+	filter->matrix_z[2][0] = c1 * s2 * c3 + s1 * c2 * s3;
+	filter->matrix_z[3][0] = s1 * c2 * c3 - c1 * s2 * s3;
 
 }
 void kalman_filter_init(kalman_filter *filter)
@@ -568,7 +575,7 @@ void kalman_filter_init(kalman_filter *filter)
 
 	//initialize constant matrix contents. The A matrix and other matrices are skipped because it changes at every step
 	memcpy(&(filter->matrix_B[0][0]), ((float32_t[4][1]){{0}, {0}, {0}, {0}}), 4 * 1 * sizeof(float32_t));
-	memcpy(&(filter->matrix_x[0][0]), ((float32_t[4][1]){{1}, {0}, {0}, {0}}), 4 * 1 * sizeof(float32_t)); //quaternion corresponding to yaw, pitch, roll above is {1,0,0,0}
+	memcpy(&(filter->matrix_xp[0][0]), ((float32_t[4][1]){{1}, {0}, {0}, {0}}), 4 * 1 * sizeof(float32_t)); //quaternion corresponding to yaw, pitch, roll above is {1,0,0,0}
 
 	float32_t temp_val = 1;
 	memcpy(&(filter->matrix_H[0][0]), ((float32_t[4][4]){{temp_val, 0, 0, 0}, {0, temp_val, 0, 0}, {0, 0, temp_val, 0}, {0, 0, 0, temp_val}}), 4 * 1 * sizeof(float32_t));
@@ -578,36 +585,65 @@ void kalman_filter_init(kalman_filter *filter)
 	temp_val = 10;
 	memcpy(&(filter->matrix_R[0][0]), ((float32_t[4][4]){{temp_val, 0, 0, 0}, {0, temp_val, 0, 0}, {0, 0, temp_val, 0}, {0, 0, 0, temp_val}}), 4 * 1 * sizeof(float32_t));
 	temp_val = 1;
-	memcpy(&(filter->matrix_P[0][0]), ((float32_t[4][4]){{temp_val, 0, 0, 0}, {0, temp_val, 0, 0}, {0, 0, temp_val, 0}, {0, 0, 0, temp_val}}), 4 * 1 * sizeof(float32_t));
+	memcpy(&(filter->matrix_Pp[0][0]), ((float32_t[4][4]){{temp_val, 0, 0, 0}, {0, temp_val, 0, 0}, {0, 0, temp_val, 0}, {0, 0, 0, temp_val}}), 4 * 1 * sizeof(float32_t));
 
 	//initialize arm matrix instances
 	arm_mat_init_f32(&filter->matrix_A_arm, 4, 4, &filter->matrix_A[0][0]);
 	arm_mat_init_f32(&filter->matrix_B_arm, 4, 1, &filter->matrix_B[0][0]);
-	arm_mat_init_f32(&filter->matrix_x_arm, 4, 1, &filter->matrix_x[0][0]);
-	arm_mat_init_f32(&filter->matrix_Ax_arm, 4, 1, &filter->matrix_Ax[0][0]);
+	arm_mat_init_f32(&filter->matrix_xp_arm, 4, 1, &filter->matrix_xp[0][0]);
+	arm_mat_init_f32(&filter->matrix_Axp_arm, 4, 1, &filter->matrix_Axp[0][0]);
 	arm_mat_init_f32(&filter->matrix_H_arm, 4, 1, &filter->matrix_H[0][0]);
 	arm_mat_init_f32(&filter->matrix_Q_arm, 4, 4, &filter->matrix_Q[0][0]);
 	arm_mat_init_f32(&filter->matrix_R_arm, 4, 4, &filter->matrix_R[0][0]);
-	arm_mat_init_f32(&filter->matrix_P_arm, 4, 4, &filter->matrix_P[0][0]);
+	arm_mat_init_f32(&filter->matrix_Pp_arm, 4, 4, &filter->matrix_Pp[0][0]);
 	arm_mat_init_f32(&filter->matrix_K_arm, 4, 4, &filter->matrix_K[0][0]);
 }
 void get_kalman_prediction(kalman_filter *filter, mpu6050_sensor_data *sensor_data)
 {
 	//do matrix multiplication to predict angular positions state "x" (a priori estimate)
-	arm_status arm_status_temp = arm_mat_mult_f32(&filter->matrix_A_arm, &filter->matrix_x_arm, &filter->matrix_Ax_arm);
+	arm_status arm_status_temp = arm_mat_mult_f32(&filter->matrix_A_arm, &filter->matrix_xp_arm, &filter->matrix_Axp_arm);
 
 	//predict error covariance "P"
-	arm_status_temp = arm_mat_mult_f32(&filter->matrix_A_arm, &filter->matrix_P_arm, &filter->matrix_P_arm); //matrix_P_arm = A*P_{k-1}
+	arm_status_temp = arm_mat_mult_f32(&filter->matrix_A_arm, &filter->matrix_Pp_arm, &filter->matrix_Pp_arm); //matrix_Pp_arm = A*P_{k-1}
 	float32_t matrix_AT[4][4]; //getting transpose of A matrix
 	arm_matrix_instance_f32 matrix_AT_arm;
 	arm_mat_init_f32(&matrix_AT_arm, 4, 4, &matrix_AT[0][0]);
 	arm_status_temp = arm_mat_trans_f32(&filter->matrix_A_arm, &matrix_AT_arm); //calculate transpose of A
-	arm_status_temp = arm_mat_mult_f32(&filter->matrix_P_arm, &matrix_AT_arm, &filter->matrix_P_arm); //matrix_P_arm = A*P_{k-1}*A^{T}
-	arm_mat_add_f32(&filter->matrix_P_arm, &filter->matrix_Q_arm, &filter->matrix_P_arm); //matrix_P_arm = A*P_{k-1}*A^{T} + Q = P_{k} (a priori)
+	arm_status_temp = arm_mat_mult_f32(&filter->matrix_Pp_arm, &matrix_AT_arm, &filter->matrix_Pp_arm); //matrix_Pp_arm = A*P_{k-1}*A^{T}
+	arm_mat_add_f32(&filter->matrix_Pp_arm, &filter->matrix_Q_arm, &filter->matrix_Pp_arm); //matrix_Pp_arm = A*P_{k-1}*A^{T} + Q = P_{k} (a priori)
 
+}
+void compute_kalman_gain(kalman_filter *filter)
+{
+	float32_t matrix_HT[4][4]; //getting transpose of H matrix
+	arm_matrix_instance_f32 matrix_HT_arm;
+	arm_mat_init_f32(&matrix_HT_arm, 4, 4, &matrix_HT[0][0]);
+	arm_status arm_status_temp = arm_mat_trans_f32(&filter->matrix_H_arm, &matrix_HT_arm); //calculate transpose of H
+	arm_status_temp = arm_mat_mult_f32(&filter->matrix_Pp_arm, &matrix_HT_arm, &filter->matrix_K_arm); //matrix_K_arm = P * H_{T}
+
+	float32_t matrix_inv_part[4][4]; //will be equal to inv(H * P_{k} * H^{T} + R)
+	arm_matrix_instance_f32 matrix_inv_part_arm;
+	arm_mat_init_f32(&matrix_inv_part_arm, 4, 4, &matrix_inv_part[0][0]);
+	arm_status_temp = arm_mat_mult_f32(&filter->matrix_H_arm, &filter->matrix_Pp_arm, &matrix_inv_part_arm); //matrix_inv_part_arm = H * P_{k}
+	arm_status_temp = arm_mat_mult_f32(&matrix_inv_part_arm, &matrix_HT_arm, &matrix_inv_part_arm); // matrix_inv_part_arm = H * P_{k} * H^{T}
+	arm_status_temp = arm_mat_add_f32(&matrix_inv_part_arm, &filter->matrix_R_arm, &matrix_inv_part_arm); // matrix_inv_part_arm = H * P_{k} * H^{T} + R
+	arm_status_temp = arm_mat_inverse_f32(&matrix_inv_part_arm, &matrix_inv_part_arm); //matrix_inv_part_arm = inv(H * P_{k} * H^{T} + R)
+
+	arm_status_temp = arm_mat_mult_f32(&filter->matrix_K_arm, &matrix_inv_part_arm, &filter->matrix_K_arm); //matrix_K_arm = P * H_{T} * inv(H * P_{k} * H^{T} + R)
 }
 void get_kalman_estimate(kalman_filter *filter, mpu6050_sensor_data *sensor_data)
 {
+	//get estimate of state "x"
+	//want x = xp + K*(z - H*xp)
+	arm_status arm_status_temp = arm_mat_mult_f32(&filter->matrix_H_arm, &filter->matrix_xp_arm, &filter->matrix_x_arm); //matrix_x_arm = H * xp
+	arm_status_temp = arm_mat_sub_f32(&filter->matrix_z_arm, &filter->matrix_x_arm, &filter->matrix_x_arm); //matrix_x_arm = z - H * xp
+	arm_status_temp = arm_mat_mult_f32(&filter->matrix_K_arm, &filter->matrix_x_arm, &filter->matrix_x_arm); //matrix_x_arm = K*(z - H * xp)
+	arm_status_temp = arm_mat_add_f32(&filter->matrix_xp_arm, &filter->matrix_x_arm, &filter->matrix_x_arm); //matrix_x_arm = xp + K*(z - H * xp)
+
+	//get estimate of error covariance "P"
+	arm_status_temp = arm_mat_mult_f32(&filter->matrix_K_arm, &filter->matrix_H_arm, &filter->matrix_P_arm); //matrix_P_matrix = K * H
+	arm_status_temp = arm_mat_mult_f32(&filter->matrix_P_arm, &filter->matrix_Pp_arm, &filter->matrix_P_arm); //matrix_P_matrix = K * H * Pp
+	arm_status_temp = arm_mat_sub_f32(&filter->matrix_Pp_arm, &filter->matrix_P_arm, &filter->matrix_P_arm); //matrix_P_matrix = Pp - K * H * Pp
 
 }
 void update_kalman_filter(kalman_filter *filter, mpu6050_sensor_data *sensor_data)
@@ -628,30 +664,39 @@ void update_kalman_filter(kalman_filter *filter, mpu6050_sensor_data *sensor_dat
 	 *					 wx   0    wz  -wy ;
 	 *					 wy  -wz   0    wx ;
 	 *					 wz   wy  -wx   0  ]; */
+
+	const float32_t wx_const = sensor_data->wx;
+	const float32_t wy_const = sensor_data->wy;
+	const float32_t wz_const = sensor_data->wz;
+//	float32_t yo[4][4] = {{1, -wx_const * dt / 2, -wy_const * dt / 2, -wz_const * dt / 2},
+//							{wx_const * dt / 2, 1, wz_const * dt / 2, -wy_const * dt / 2},
+//							{wy_const * dt / 2, -wz_const * dt / 2, 1, wx_const * dt / 2},
+//							{wz_const * dt / 2, wy_const * dt / 2, -wx_const * dt / 2, 1}};
 	memcpy(&(filter->matrix_A[0][0]), ((float32_t[4][4]){{1, -sensor_data->wx * dt / 2, -sensor_data->wy * dt / 2, -sensor_data->wz * dt / 2}, {sensor_data->wx * dt / 2, 1, sensor_data->wz * dt / 2, -sensor_data->wy * dt / 2}, {sensor_data->wy * dt / 2, -sensor_data->wz * dt / 2, 1, sensor_data->wx * dt / 2}, {sensor_data->wz * dt / 2, sensor_data->wy * dt / 2, -sensor_data->wx * dt / 2, 1}}), 4 * 4 * sizeof(float32_t));
+
+	//update z, the measurements. The measurements are combination of previous kalman filter output (yaw) and accelerometer data (pitch and roll)
+	get_euler_parameters(filter);
 
 	get_kalman_prediction(filter, sensor_data);
 	compute_kalman_gain(filter);
 	get_kalman_estimate(filter, sensor_data);
+	update_ypr(filter);
 }
-void compute_kalman_gain(kalman_filter *filter)
+void update_ypr(kalman_filter *filter)
 {
-	float32_t matrix_HT[4][4]; //getting transpose of H matrix
-	arm_matrix_instance_f32 matrix_HT_arm;
-	arm_mat_init_f32(&matrix_HT_arm, 4, 4, &matrix_HT[0][0]);
-	arm_status arm_status_temp = arm_mat_trans_f32(&filter->matrix_H_arm, &matrix_HT_arm); //calculate transpose of H
-	arm_status_temp = arm_mat_mult_f32(&filter->matrix_P_arm, &matrix_HT_arm, &filter->matrix_K_arm); //matrix_K_arm = P * H_{T}
+	//turn quaternion (x) to euler angles (yaw pitch roll)
 
-	float32_t matrix_inv_part[4][4]; //will be equal to inv(H * P_{k} * H^{T} + R)
-	arm_matrix_instance_f32 matrix_inv_part_arm;
-	arm_mat_init_f32(&matrix_inv_part_arm, 4, 4, &matrix_inv_part[0][0]);
-	arm_status_temp = arm_mat_mult_f32(&filter->matrix_H_arm, &filter->matrix_P_arm, &matrix_inv_part_arm); //matrix_inv_part_arm = H * P_{k}
-	arm_status_temp = arm_mat_mult_f32(&matrix_inv_part_arm, &matrix_HT_arm, &matrix_inv_part_arm); // matrix_inv_part_arm = H * P_{k} * H^{T}
-	arm_status_temp = arm_mat_add_f32(&matrix_inv_part_arm, &filter->matrix_R_arm, &matrix_inv_part_arm); // matrix_inv_part_arm = H * P_{k} * H^{T} + R
-	arm_status_temp = arm_mat_inverse_f32(&matrix_inv_part_arm, &matrix_inv_part_arm); //matrix_inv_part_arm = inv(H * P_{k} * H^{T} + R)
+	float32_t q0 = filter->matrix_x[0][0];
+	float32_t q1 = filter->matrix_x[1][0];
+	float32_t q2 = filter->matrix_x[2][0];
+	float32_t q3 = filter->matrix_x[3][0];
 
-	arm_status_temp = arm_mat_mult_f32(&filter->matrix_K_arm, &matrix_inv_part_arm, &filter->matrix_K_arm); //matrix_K_arm = P * H_{T} * inv(H * P_{k} * H^{T} + R)
+	filter->kalman_yaw = atan2(2 * (q1 * q2 + q0 * q3), q0 * q0 + q1 * q1 - q2 * q2 - q3 * q3);
+	filter->kalman_pitch = asin(-2 * (q1 * q3 - q0 * q2));
+	filter->kalman_roll = atan2(2 * (q2 * q3 + q0 * q1), q0 * q0 - q1 * q1 - q2 * q2 + q3 * q3);
+
 }
+
 /* USER CODE END 4 */
 
 /**
