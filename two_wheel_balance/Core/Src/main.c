@@ -62,19 +62,32 @@ typedef struct
 
 typedef struct
 {
-	//struct to extract and organize sensor readings. Interestingly enough, having the struct seems to make code
-	//faster because these variables are in contiguous blocks of memory.
-	float32_t matrix_A[4][4];
+	//struct to store data and calculations used in kalman filter
+
+	//state space matrices
+	float32_t matrix_A[4][4]; //state transition matrix
 	float32_t matrix_B[4][1];
 	float32_t matrix_x[4][1];	//euler parameters (quaternion), the state of the system
 	float32_t matrix_Ax[4][1];
-	float32_t matrix_C[4][4];
 
+	float32_t matrix_H[4][4]; //observation matrix, how x matrix (the state) relates to the output/measurement z
+
+	float32_t matrix_Q[4][4]; //covariance matrix of process noise/disturbance
+	float32_t matrix_R[4][4]; //covariance matrix of measurement noise
+	float32_t matrix_P[4][4]; //error covariance
+
+	float32_t matrix_K[4][4]; //Kalman gain
+
+	//arm instances
 	arm_matrix_instance_f32 matrix_A_arm;
 	arm_matrix_instance_f32 matrix_B_arm;
 	arm_matrix_instance_f32 matrix_x_arm;
 	arm_matrix_instance_f32 matrix_Ax_arm;
-	arm_matrix_instance_f32 matrix_C_arm;
+	arm_matrix_instance_f32 matrix_H_arm;
+	arm_matrix_instance_f32 matrix_Q_arm;
+	arm_matrix_instance_f32 matrix_R_arm;
+	arm_matrix_instance_f32 matrix_P_arm;
+	arm_matrix_instance_f32 matrix_K_arm;
 
 	//euler angles, output of kalman filter, should be more accurate than yaw, pitch, roll of sensor_data
 	float32_t kalman_yaw;
@@ -133,6 +146,7 @@ void kalman_filter_init(kalman_filter *filter); //sets initial kalman filter yaw
 void get_kalman_prediction(kalman_filter *filter, mpu6050_sensor_data *sensor_data);
 void get_kalman_estimate(kalman_filter *filter, mpu6050_sensor_data *sensor_data);
 void update_kalman_filter(kalman_filter *filter, mpu6050_sensor_data *sensor_data);
+void compute_kalman_gain(kalman_filter *filter);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -552,18 +566,45 @@ void kalman_filter_init(kalman_filter *filter)
 	filter->kalman_yaw = 0;
 	filter->kalman_yaw = 0;
 
-	memcpy(&(filter->matrix_x[0]), ((float32_t[4]){1, 0, 0, 0}), 4 * sizeof(float32_t)); //quaternion corresponding to yaw, pitch, roll above is {1,0,0,0}
+	//initialize constant matrix contents. The A matrix and other matrices are skipped because it changes at every step
+	memcpy(&(filter->matrix_B[0][0]), ((float32_t[4][1]){{0}, {0}, {0}, {0}}), 4 * 1 * sizeof(float32_t));
+	memcpy(&(filter->matrix_x[0][0]), ((float32_t[4][1]){{1}, {0}, {0}, {0}}), 4 * 1 * sizeof(float32_t)); //quaternion corresponding to yaw, pitch, roll above is {1,0,0,0}
+
+	float32_t temp_val = 1;
+	memcpy(&(filter->matrix_H[0][0]), ((float32_t[4][4]){{temp_val, 0, 0, 0}, {0, temp_val, 0, 0}, {0, 0, temp_val, 0}, {0, 0, 0, temp_val}}), 4 * 1 * sizeof(float32_t));
+
+	temp_val = 1;
+	memcpy(&(filter->matrix_Q[0][0]), ((float32_t[4][4]){{temp_val, 0, 0, 0}, {0, temp_val, 0, 0}, {0, 0, temp_val, 0}, {0, 0, 0, temp_val}}), 4 * 1 * sizeof(float32_t));
+	temp_val = 10;
+	memcpy(&(filter->matrix_R[0][0]), ((float32_t[4][4]){{temp_val, 0, 0, 0}, {0, temp_val, 0, 0}, {0, 0, temp_val, 0}, {0, 0, 0, temp_val}}), 4 * 1 * sizeof(float32_t));
+	temp_val = 1;
+	memcpy(&(filter->matrix_P[0][0]), ((float32_t[4][4]){{temp_val, 0, 0, 0}, {0, temp_val, 0, 0}, {0, 0, temp_val, 0}, {0, 0, 0, temp_val}}), 4 * 1 * sizeof(float32_t));
 
 	//initialize arm matrix instances
 	arm_mat_init_f32(&filter->matrix_A_arm, 4, 4, &filter->matrix_A[0][0]);
 	arm_mat_init_f32(&filter->matrix_B_arm, 4, 1, &filter->matrix_B[0][0]);
 	arm_mat_init_f32(&filter->matrix_x_arm, 4, 1, &filter->matrix_x[0][0]);
 	arm_mat_init_f32(&filter->matrix_Ax_arm, 4, 1, &filter->matrix_Ax[0][0]);
+	arm_mat_init_f32(&filter->matrix_H_arm, 4, 1, &filter->matrix_H[0][0]);
+	arm_mat_init_f32(&filter->matrix_Q_arm, 4, 4, &filter->matrix_Q[0][0]);
+	arm_mat_init_f32(&filter->matrix_R_arm, 4, 4, &filter->matrix_R[0][0]);
+	arm_mat_init_f32(&filter->matrix_P_arm, 4, 4, &filter->matrix_P[0][0]);
+	arm_mat_init_f32(&filter->matrix_K_arm, 4, 4, &filter->matrix_K[0][0]);
 }
 void get_kalman_prediction(kalman_filter *filter, mpu6050_sensor_data *sensor_data)
 {
-	//do matrix multiplication to predict angular positions state (a priori estimate)
-	arm_status arm_status_temp = arm_mat_mult_f32(&filter->matrix_A, &filter->matrix_x, &filter->matrix_Ax_arm);
+	//do matrix multiplication to predict angular positions state "x" (a priori estimate)
+	arm_status arm_status_temp = arm_mat_mult_f32(&filter->matrix_A_arm, &filter->matrix_x_arm, &filter->matrix_Ax_arm);
+
+	//predict error covariance "P"
+	arm_status_temp = arm_mat_mult_f32(&filter->matrix_A_arm, &filter->matrix_P_arm, &filter->matrix_P_arm); //matrix_P_arm = A*P_{k-1}
+	float32_t matrix_AT[4][4];
+	arm_matrix_instance_f32 matrix_AT_arm;
+	arm_mat_init_f32(&matrix_AT_arm, 4, 4, &matrix_AT[0][0]);
+	arm_status_temp = arm_mat_trans_f32(&filter->matrix_A_arm, &matrix_AT_arm); //calculate transpose of A
+	arm_status_temp = arm_mat_mult_f32(&filter->matrix_P_arm, &matrix_AT_arm, &filter->matrix_P_arm); //matrix_P_arm = A*P_{k-1}*A^{T}
+	arm_mat_add_f32(&filter->matrix_P_arm, &filter->matrix_Q_arm, &filter->matrix_P_arm); //matrix_P_arm = A*P_{k-1}*A^{T} + Q = Pk(a priori)
+
 }
 void get_kalman_estimate(kalman_filter *filter, mpu6050_sensor_data *sensor_data)
 {
@@ -590,7 +631,12 @@ void update_kalman_filter(kalman_filter *filter, mpu6050_sensor_data *sensor_dat
 	memcpy(&(filter->matrix_A[0][0]), ((float32_t[4][4]){{1, -sensor_data->wx * dt / 2, -sensor_data->wy * dt / 2, -sensor_data->wz * dt / 2}, {sensor_data->wx * dt / 2, 1, sensor_data->wz * dt / 2, -sensor_data->wy * dt / 2}, {sensor_data->wy * dt / 2, -sensor_data->wz * dt / 2, 1, sensor_data->wx * dt / 2}, {sensor_data->wz * dt / 2, sensor_data->wy * dt / 2, -sensor_data->wx * dt / 2, 1}}), 4 * 4 * sizeof(float32_t));
 
 	get_kalman_prediction(filter, sensor_data);
+	compute_kalman_gain(filter);
 	get_kalman_estimate(filter, sensor_data);
+}
+void compute_kalman_gain(kalman_filter *filter)
+{
+
 }
 /* USER CODE END 4 */
 
