@@ -93,6 +93,11 @@ typedef struct
 	arm_matrix_instance_f32 matrix_P_arm;
 	arm_matrix_instance_f32 matrix_K_arm;
 
+	//euler angles, measurements used to fill z matrix in later on, which is used in kalman estimation step
+	float32_t yaw_z;
+	float32_t pitch_z;
+	float32_t roll_z;
+
 	//euler angles, output of kalman filter, should be more accurate than yaw, pitch, roll of sensor_data
 	float32_t kalman_yaw;
 	float32_t kalman_pitch;
@@ -555,12 +560,12 @@ void calc_accelerometer_tilt(mpu6050_sensor_data *sensor_data)
 }
 void get_euler_parameters(kalman_filter *filter)
 {
-	float32_t c1 = cos(filter->kalman_yaw / 2);
-	float32_t s1 = sin(filter->kalman_yaw / 2);
-	float32_t c2 = cos(filter->kalman_pitch / 2);
-	float32_t s2 = sin(filter->kalman_pitch / 2);
-	float32_t c3 = cos(filter->kalman_roll / 2);
-	float32_t s3 = sin(filter->kalman_roll / 2);
+	float32_t c1 = cos(filter->yaw_z / 2);
+	float32_t s1 = sin(filter->yaw_z / 2);
+	float32_t c2 = cos(filter->pitch_z / 2);
+	float32_t s2 = sin(filter->pitch_z / 2);
+	float32_t c3 = cos(filter->roll_z / 2);
+	float32_t s3 = sin(filter->roll_z / 2);
 
 	filter->matrix_z[0][0] = c1 * c2 * c3 + s1 * s2 * s3;
 	filter->matrix_z[1][0] = c1 * c2 * s3 - s1 * s2 * c3;
@@ -571,9 +576,13 @@ void get_euler_parameters(kalman_filter *filter)
 void kalman_filter_init(kalman_filter *filter)
 {
 	//define starting position, definately necessary to get first output from kalman filter
+	filter->yaw_z = 0;
+	filter->pitch_z = 0;
+	filter->roll_z = 0;
+
 	filter->kalman_yaw = 0;
-	filter->kalman_yaw = 0;
-	filter->kalman_yaw = 0;
+	filter->kalman_pitch = 0;
+	filter->kalman_roll = 0;
 
 	//initialize constant matrix contents. The A matrix and other matrices are skipped because it changes at every step
 	memcpy(&(filter->matrix_B[0][0]), ((float32_t[4][1]){{0}, {0}, {0}, {0}}), 4 * 1 * sizeof(float32_t));
@@ -658,9 +667,11 @@ void update_kalman_filter(kalman_filter *filter, mpu6050_sensor_data *sensor_dat
 	sensor_data->wy = sensor_data->gyro_y / (float32_t) 1879.301568;
 	sensor_data->wz = sensor_data->gyro_z / (float32_t) 1879.301568;
 
+	//measurements used to fill z matrix, these euler angles will be converted to quaternion form later. Fusion happens here as output of kalman filter and accelerometer are both used as measurement sources.
+	filter->yaw_z = filter->kalman_yaw; //comes from output of kalman filter
 	//using pitch and roll from accelerometer measurement to "inject" into kalman filter
-	filter->kalman_pitch = sensor_data->pitch;
-	filter->kalman_roll = sensor_data->roll;
+	filter->pitch_z = sensor_data->pitch;
+	filter->roll_z = sensor_data->roll;
 
 	//update discrete A matrix. Using zero order hold estimation: A_discrete = I + A_analog * dt
 	//dt is periods
@@ -696,6 +707,7 @@ void update_ypr(kalman_filter *filter)
 	float32_t q2 = filter->matrix_x[2][0];
 	float32_t q3 = filter->matrix_x[3][0];
 
+	//update kalman filter final output for timestep
 	filter->kalman_yaw = atan2(2 * (q1 * q2 + q0 * q3), q0 * q0 + q1 * q1 - q2 * q2 - q3 * q3);
 	filter->kalman_pitch = asin(fmax(-1, fmin(1, -2 * (q1 * q3 - q0 * q2))));
 	filter->kalman_roll = atan2(2 * (q2 * q3 + q0 * q1), q0 * q0 - q1 * q1 - q2 * q2 + q3 * q3);
