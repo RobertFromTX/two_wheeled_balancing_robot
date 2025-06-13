@@ -207,7 +207,15 @@ int main(void)
 	uint8_t reg_addr[1];
 	/* We compute the MSB and LSB parts of the memory address */
 	reg_addr[0] = (uint8_t) (0x6A);
+
 	HAL_Delay(1000); //delay for init functions to see if it stops glitch of i2c transmission never completing
+	HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_3);
+	HAL_Delay(100);
+	HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_3);
+	HAL_Delay(100);
+	HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_3);
+	HAL_Delay(100);
+	HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_3);
 	HAL_StatusTypeDef returnValue = HAL_I2C_Master_Transmit_DMA(&hi2c1, MPU6050_ADDR_LSL1, reg_addr, 1);
 	while (HAL_I2C_GetState(&hi2c1) != HAL_I2C_STATE_READY);
 	if (returnValue != HAL_OK)
@@ -240,17 +248,16 @@ int main(void)
 		if (data_ready)
 		{
 			HAL_NVIC_DisableIRQ(EXTI4_IRQn);
-//get accelerometer and gyro data and store in struct.
-//reading without FIFO, IMPORTANT: if using interrupt to synchronize, need a series resistor between interrupt pin on sensor and EXTI pin. Helps to form low pass filter to dampen voltage spikes that mess up the i2c bus and probably more importantly decrease current that could drive SDA pin low.
+
+			//get accelerometer and gyro data and store in struct.
+			//reading without FIFO, IMPORTANT: if using interrupt to synchronize, need a series resistor between interrupt pin on sensor and EXTI pin. Helps to form low pass filter to dampen voltage spikes that mess up the i2c bus and probably more importantly decrease current that could drive SDA pin low.
 			mpu6050_get_raw_measurements(&hi2c1, &sensor_data_1);
-
-//get tilt measurement from accelerometer, pitch and roll only
+			//get tilt measurement from accelerometer, pitch and roll only
 			calc_accelerometer_tilt(&sensor_data_1);
-
-//get estimate(output of b0,b1,b2,b3 euler parameters) from kalman filter
+			//get estimate(output of b0,b1,b2,b3 euler parameters) from kalman filter
 			update_kalman_filter(&filter1, &sensor_data_1);
-
 			data_ready = 0;
+
 			HAL_NVIC_EnableIRQ(EXTI4_IRQn);
 		}
 
@@ -267,12 +274,9 @@ int main(void)
  */
 void SystemClock_Config(void)
 {
-	RCC_OscInitTypeDef RCC_OscInitStruct =
-			{0};
-	RCC_ClkInitTypeDef RCC_ClkInitStruct =
-			{0};
-	RCC_PeriphCLKInitTypeDef PeriphClkInit =
-			{0};
+	RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+	RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+	RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
 
 	/** Initializes the RCC Oscillators according to the specified parameters
 	 * in the RCC_OscInitTypeDef structure.
@@ -280,7 +284,9 @@ void SystemClock_Config(void)
 	RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
 	RCC_OscInitStruct.HSIState = RCC_HSI_ON;
 	RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
-	RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
+	RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+	RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
+	RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL16;
 	if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
 	{
 		Error_Handler();
@@ -288,13 +294,14 @@ void SystemClock_Config(void)
 
 	/** Initializes the CPU, AHB and APB buses clocks
 	 */
-	RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK | RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
-	RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
+	RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK
+			| RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
+	RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
 	RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
-	RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
+	RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
 	RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
-	if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0) != HAL_OK)
+	if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
 	{
 		Error_Handler();
 	}
@@ -380,14 +387,23 @@ static void MX_DMA_Init(void)
  */
 static void MX_GPIO_Init(void)
 {
-	GPIO_InitTypeDef GPIO_InitStruct =
-			{0};
+	GPIO_InitTypeDef GPIO_InitStruct = {0};
 	/* USER CODE BEGIN MX_GPIO_Init_1 */
 	/* USER CODE END MX_GPIO_Init_1 */
 
 	/* GPIO Ports Clock Enable */
 	__HAL_RCC_GPIOA_CLK_ENABLE();
 	__HAL_RCC_GPIOB_CLK_ENABLE();
+
+	/*Configure GPIO pin Output Level */
+	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_RESET);
+
+	/*Configure GPIO pin : PB3 */
+	GPIO_InitStruct.Pin = GPIO_PIN_3;
+	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+	GPIO_InitStruct.Pull = GPIO_NOPULL;
+	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+	HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
 	/*Configure GPIO pin : PB4 */
 	GPIO_InitStruct.Pin = GPIO_PIN_4;
@@ -593,7 +609,7 @@ void kalman_filter_init(kalman_filter *filter)
 
 	temp_val = 0.0001;
 	memcpy(&(filter->matrix_Q[0][0]), ((float32_t[4][4]){{temp_val, 0, 0, 0}, {0, temp_val, 0, 0}, {0, 0, temp_val, 0}, {0, 0, 0, temp_val}}), 4 * 4 * sizeof(float32_t));
-	temp_val = 10;
+	temp_val = 0.1;
 	memcpy(&(filter->matrix_R[0][0]), ((float32_t[4][4]){{temp_val, 0, 0, 0}, {0, temp_val, 0, 0}, {0, 0, temp_val, 0}, {0, 0, 0, temp_val}}), 4 * 4 * sizeof(float32_t));
 	temp_val = 1;
 	memcpy(&(filter->matrix_P[0][0]), ((float32_t[4][4]){{temp_val, 0, 0, 0}, {0, temp_val, 0, 0}, {0, 0, temp_val, 0}, {0, 0, 0, temp_val}}), 4 * 4 * sizeof(float32_t));
