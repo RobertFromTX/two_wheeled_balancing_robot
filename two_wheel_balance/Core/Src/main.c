@@ -527,7 +527,7 @@ void mpu6050_init(I2C_HandleTypeDef *hi2c)
 
 	//Gyro Config
 	i2c_Read_Accelerometer(hi2c, MPU6050_ADDR_LSL1, 0x1B, (uint8_t*) receive_buffer, 1); //read GYRO_CONFIG
-	command = 0x18;
+	command = 0x10;
 	i2c_Write_Accelerometer(hi2c, MPU6050_ADDR_LSL1, 0x1B, &command, 1); // +/- 1000 degrees/second full range, each 32.8 counts is 1 degree/second, all selftest off
 	i2c_Read_Accelerometer(hi2c, MPU6050_ADDR_LSL1, 0x1B, (uint8_t*) receive_buffer, 1); //read GYRO_CONFIG
 	//Accelerometer Config
@@ -607,9 +607,12 @@ void kalman_filter_init(kalman_filter *filter)
 	float32_t temp_val = 1;
 	memcpy(&(filter->matrix_H[0][0]), ((float32_t[4][4]){{temp_val, 0, 0, 0}, {0, temp_val, 0, 0}, {0, 0, temp_val, 0}, {0, 0, 0, temp_val}}), 4 * 4 * sizeof(float32_t));
 
-	temp_val = 0.0001;
+	//set process noise covariance
+	temp_val = 0.005;
 	memcpy(&(filter->matrix_Q[0][0]), ((float32_t[4][4]){{temp_val, 0, 0, 0}, {0, temp_val, 0, 0}, {0, 0, temp_val, 0}, {0, 0, 0, temp_val}}), 4 * 4 * sizeof(float32_t));
-	temp_val = 0.1;
+
+	//set measurement noise covariance
+	temp_val = 1;
 	memcpy(&(filter->matrix_R[0][0]), ((float32_t[4][4]){{temp_val, 0, 0, 0}, {0, temp_val, 0, 0}, {0, 0, temp_val, 0}, {0, 0, 0, temp_val}}), 4 * 4 * sizeof(float32_t));
 	temp_val = 1;
 	memcpy(&(filter->matrix_P[0][0]), ((float32_t[4][4]){{temp_val, 0, 0, 0}, {0, temp_val, 0, 0}, {0, 0, temp_val, 0}, {0, 0, 0, temp_val}}), 4 * 4 * sizeof(float32_t));
