@@ -104,12 +104,36 @@ typedef struct
 	float32_t kalman_roll;
 
 } kalman_filter;
+typedef struct
+{
+	//cannot set values here since no memory allocated in declaration
+	float Ts; //sampling time
+	float proportional_gain;
+	float integral_gain;
+	float derivative_gain;
+
+	float tau; // 1/(cutoff frequency of low pass filter after derivative component)
+
+	float proportional_out;
+	float integral_out;
+	float derivative_out;
+
+	float32_t error; //error is signed
+	float32_t measured_pos;
+
+	float total_out;
+	float out_max;
+	float out_min;
+} pid_controller;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+//for I2C
 #define MPU6050_ADDR_LSL1	0xD0
 
+//for PID
+#define SENSOR_HISTORY_LEN	3 //PID only needs 3 max since it is at most second order
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -122,6 +146,9 @@ I2C_HandleTypeDef hi2c1;
 DMA_HandleTypeDef hdma_i2c1_tx;
 DMA_HandleTypeDef hdma_i2c1_rx;
 
+TIM_HandleTypeDef htim1;
+DMA_HandleTypeDef hdma_tim1_ch1;
+
 /* USER CODE BEGIN PV */
 uint8_t i2c_RX_done = 0;
 uint8_t i2c_TX_done = 0;
@@ -131,6 +158,15 @@ uint8_t receive_buffer[20]; //received message buffer, randomly used
 
 const float32_t dt = .004;
 
+//setup storage for data
+mpu6050_sensor_data sensor_data_1;
+kalman_filter filter1;
+
+//setup PID controller
+pid_controller motor_controller;
+
+//initialize pitch in degrees
+float32_t pitch_adjusted_in_degrees = 0; //upright position will be 90 degrees instead of 0
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -138,6 +174,7 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
 static void MX_I2C1_Init(void);
+static void MX_TIM1_Init(void);
 /* USER CODE BEGIN PFP */
 HAL_StatusTypeDef i2c_Write_Accelerometer(I2C_HandleTypeDef *hi2c, uint16_t DevAddress, uint8_t MemAddress, uint8_t *pData, uint16_t len); // <-- Add this line here
 HAL_StatusTypeDef i2c_Read_Accelerometer(I2C_HandleTypeDef *hi2c, uint16_t DevAddress, uint8_t regAddress, uint8_t *pData, uint16_t len);
@@ -157,6 +194,12 @@ void compute_kalman_gain(kalman_filter *filter);
 void get_kalman_estimate(kalman_filter *filter, mpu6050_sensor_data *sensor_data);
 void update_kalman_filter(kalman_filter *filter, mpu6050_sensor_data *sensor_data);
 void update_ypr(kalman_filter *filter);
+
+//PID control related functions
+void initialize_PID(pid_controller *controller, uint16_t updated_measured_pos);
+void set_gains_PID(pid_controller *controller, float Kp, float Ki, float Kd);
+void update_PID(pid_controller *controller, uint16_t updated_measured_pos, uint16_t set_point);
+void update_motor_input(int16_t new_out, uint32_t **active_buffer, uint32_t **inactive_buffer);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -195,27 +238,27 @@ int main(void)
 	MX_GPIO_Init();
 	MX_DMA_Init();
 	MX_I2C1_Init();
+	MX_TIM1_Init();
 	/* USER CODE BEGIN 2 */
 
-//	__HAL_DMA_ENABLE(&hdma_i2c1_tx);
-//	__HAL_DMA_ENABLE(&hdma_i2c1_rx);
-//	__HAL_DMA_ENABLE_IT(&hdma_i2c1_tx, DMA_IT_TC | DMA_IT_HT);
-//	__enable_irq();
-//HAL i2c notes:
-//address of MPU6050 device is 1101000, but we shift it to left because the transmit and receive functions require that. So we are left with 0xD0
-//Argument to right of MPU6050_ADDR_LSL1 is the register address, see the register description in onenote.
+	//HAL i2c notes:
+	//address of MPU6050 device is 1101000, but we shift it to left because the transmit and receive functions require that. So we are left with 0xD0
+	//Argument to right of MPU6050_ADDR_LSL1 is the register address, see the register description in onenote.
 	uint8_t reg_addr[1];
 	/* We compute the MSB and LSB parts of the memory address */
 	reg_addr[0] = (uint8_t) (0x6A);
 
-	HAL_Delay(1000); //delay for init functions to see if it stops glitch of i2c transmission never completing
-	HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_3);
+	//delay for init functions to see if it stops glitch of i2c transmission never completing
+	HAL_Delay(1000);
+	HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_9);
 	HAL_Delay(100);
-	HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_3);
+	HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_9);
 	HAL_Delay(100);
-	HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_3);
+	HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_9);
 	HAL_Delay(100);
-	HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_3);
+	HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_9);
+
+	//test if transmission works
 	HAL_StatusTypeDef returnValue = HAL_I2C_Master_Transmit_DMA(&hi2c1, MPU6050_ADDR_LSL1, reg_addr, 1);
 	while (HAL_I2C_GetState(&hi2c1) != HAL_I2C_STATE_READY);
 	if (returnValue != HAL_OK)
@@ -225,19 +268,35 @@ int main(void)
 	if (__HAL_DMA_GET_FLAG(&hdma_i2c1_tx, (0x00000002U)))
 	{ // Transfer error
 		printf("DMA Transfer Error\n");
-// Handle error here
+		// Handle error here
 	}
 	HAL_DMA_IRQHandler(&hdma_i2c1_tx);
 	while (!i2c_TX_done);
 	i2c_TX_done = 0;
 
+	//setup storage for data
 	mpu6050_init(&hi2c1); //write to registers in mpu6050 to configure initial settings
-	mpu6050_sensor_data sensor_data_1;
-	kalman_filter filter1;
+	// moved to private variables to see values of attributes in structs in debug mode easier
+	//	mpu6050_sensor_data sensor_data_1;
+	//	kalman_filter filter1;
 
 	//define starting position
 	sensor_data_init(&sensor_data_1); //likely not necessary
 	kalman_filter_init(&filter1); //necessary
+
+	//Initialize PWM
+	//creating two buffers for a single motor. When changing speed, can update the inactive buffer and swap it with the active buffer
+	//to avoid two devices trying to write to the same buffer.
+	volatile uint32_t bufferA = 400; //out of 999, determines on time of PWM signal
+	volatile uint32_t bufferB = 750;
+	volatile uint32_t *active_buffer = &bufferA;
+	volatile uint32_t *inactive_buffer = &bufferB;
+	HAL_TIM_PWM_Start_DMA(&htim1, TIM_CHANNEL_1, (uint32_t*) active_buffer, 1); //send the pulse to the timer peripheral, which determines duty cycle
+
+	//setup PID controller
+	// pid_controller motor_controller; // moved to private variables to see values of attributes in structs in debug mode easier
+	initialize_PID(&motor_controller, 0);
+	set_gains_PID(&motor_controller, 6, 200, .015); //RED MOTOR (also works for yellow but less aggressive)
 
 	/* USER CODE END 2 */
 
@@ -256,6 +315,16 @@ int main(void)
 			calc_accelerometer_tilt(&sensor_data_1);
 			//get estimate(output of b0,b1,b2,b3 euler parameters) from kalman filter
 			update_kalman_filter(&filter1, &sensor_data_1);
+
+			//get pitch
+			pitch_adjusted_in_degrees = filter1.kalman_pitch * 180 / M_PI + 90; //upright position will be 90 degrees instead of 0
+
+			//update PID output
+			update_PID(&motor_controller, pitch_adjusted_in_degrees, 90);
+
+			//update PWM signal to motors
+			update_motor_input((int16_t) motor_controller.total_out, &active_buffer, &inactive_buffer); //make output whole number since pwm requires it
+
 			data_ready = 0;
 
 			HAL_NVIC_EnableIRQ(EXTI4_IRQn);
@@ -305,8 +374,9 @@ void SystemClock_Config(void)
 	{
 		Error_Handler();
 	}
-	PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_I2C1;
+	PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_I2C1 | RCC_PERIPHCLK_TIM1;
 	PeriphClkInit.I2c1ClockSelection = RCC_I2C1CLKSOURCE_HSI;
+	PeriphClkInit.Tim1ClockSelection = RCC_TIM1CLK_HCLK;
 	if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
 	{
 		Error_Handler();
@@ -362,6 +432,76 @@ static void MX_I2C1_Init(void)
 }
 
 /**
+ * @brief TIM1 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_TIM1_Init(void)
+{
+
+	/* USER CODE BEGIN TIM1_Init 0 */
+
+	/* USER CODE END TIM1_Init 0 */
+
+	TIM_MasterConfigTypeDef sMasterConfig = {0};
+	TIM_OC_InitTypeDef sConfigOC = {0};
+	TIM_BreakDeadTimeConfigTypeDef sBreakDeadTimeConfig = {0};
+
+	/* USER CODE BEGIN TIM1_Init 1 */
+
+	/* USER CODE END TIM1_Init 1 */
+	htim1.Instance = TIM1;
+	htim1.Init.Prescaler = 63;
+	htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
+	htim1.Init.Period = 999;
+	htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+	htim1.Init.RepetitionCounter = 0;
+	htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+	if (HAL_TIM_PWM_Init(&htim1) != HAL_OK)
+	{
+		Error_Handler();
+	}
+	sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+	sMasterConfig.MasterOutputTrigger2 = TIM_TRGO2_RESET;
+	sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+	if (HAL_TIMEx_MasterConfigSynchronization(&htim1, &sMasterConfig) != HAL_OK)
+	{
+		Error_Handler();
+	}
+	sConfigOC.OCMode = TIM_OCMODE_PWM1;
+	sConfigOC.Pulse = 0;
+	sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+	sConfigOC.OCNPolarity = TIM_OCNPOLARITY_HIGH;
+	sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+	sConfigOC.OCIdleState = TIM_OCIDLESTATE_RESET;
+	sConfigOC.OCNIdleState = TIM_OCNIDLESTATE_RESET;
+	if (HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+	{
+		Error_Handler();
+	}
+	sBreakDeadTimeConfig.OffStateRunMode = TIM_OSSR_DISABLE;
+	sBreakDeadTimeConfig.OffStateIDLEMode = TIM_OSSI_DISABLE;
+	sBreakDeadTimeConfig.LockLevel = TIM_LOCKLEVEL_OFF;
+	sBreakDeadTimeConfig.DeadTime = 0;
+	sBreakDeadTimeConfig.BreakState = TIM_BREAK_DISABLE;
+	sBreakDeadTimeConfig.BreakPolarity = TIM_BREAKPOLARITY_HIGH;
+	sBreakDeadTimeConfig.BreakFilter = 0;
+	sBreakDeadTimeConfig.Break2State = TIM_BREAK2_DISABLE;
+	sBreakDeadTimeConfig.Break2Polarity = TIM_BREAK2POLARITY_HIGH;
+	sBreakDeadTimeConfig.Break2Filter = 0;
+	sBreakDeadTimeConfig.AutomaticOutput = TIM_AUTOMATICOUTPUT_DISABLE;
+	if (HAL_TIMEx_ConfigBreakDeadTime(&htim1, &sBreakDeadTimeConfig) != HAL_OK)
+	{
+		Error_Handler();
+	}
+	/* USER CODE BEGIN TIM1_Init 2 */
+
+	/* USER CODE END TIM1_Init 2 */
+	HAL_TIM_MspPostInit(&htim1);
+
+}
+
+/**
  * Enable DMA controller clock
  */
 static void MX_DMA_Init(void)
@@ -377,6 +517,9 @@ static void MX_DMA_Init(void)
 	/* DMA1_Channel3_IRQn interrupt configuration */
 	HAL_NVIC_SetPriority(DMA1_Channel3_IRQn, 0, 0);
 	HAL_NVIC_EnableIRQ(DMA1_Channel3_IRQn);
+	/* DMA1_Channel4_IRQn interrupt configuration */
+	HAL_NVIC_SetPriority(DMA1_Channel4_IRQn, 0, 0);
+	HAL_NVIC_EnableIRQ(DMA1_Channel4_IRQn);
 
 }
 
@@ -396,24 +539,24 @@ static void MX_GPIO_Init(void)
 	__HAL_RCC_GPIOB_CLK_ENABLE();
 
 	/*Configure GPIO pin Output Level */
-	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_RESET);
+	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_9, GPIO_PIN_RESET);
 
-	/*Configure GPIO pin : PB3 */
-	GPIO_InitStruct.Pin = GPIO_PIN_3;
+	/*Configure GPIO pin : PA9 */
+	GPIO_InitStruct.Pin = GPIO_PIN_9;
 	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
 	GPIO_InitStruct.Pull = GPIO_NOPULL;
 	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-	HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+	HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-	/*Configure GPIO pin : PB4 */
-	GPIO_InitStruct.Pin = GPIO_PIN_4;
+	/*Configure GPIO pin : PB3 */
+	GPIO_InitStruct.Pin = GPIO_PIN_3;
 	GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
 	GPIO_InitStruct.Pull = GPIO_NOPULL;
 	HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
 	/* EXTI interrupt init*/
-	HAL_NVIC_SetPriority(EXTI4_IRQn, 0, 0);
-	HAL_NVIC_EnableIRQ(EXTI4_IRQn);
+	HAL_NVIC_SetPriority(EXTI3_IRQn, 0, 0);
+	HAL_NVIC_EnableIRQ(EXTI3_IRQn);
 
 	/* USER CODE BEGIN MX_GPIO_Init_2 */
 	/* USER CODE END MX_GPIO_Init_2 */
@@ -473,7 +616,7 @@ void HAL_I2C_MasterRxCpltCallback(I2C_HandleTypeDef *hi2c)
 }
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
-	if (GPIO_Pin == GPIO_PIN_4)
+	if (GPIO_Pin == GPIO_PIN_3)
 	{
 		data_ready = 1;
 	}
@@ -733,6 +876,158 @@ void update_ypr(kalman_filter *filter)
 
 }
 
+//PID control functions
+void initialize_PID(pid_controller *controller, uint16_t updated_measured_pos)
+{
+
+	controller->Ts = 0.0001; //equates to 10kHz
+	controller->tau = .001;
+
+	controller->out_max = 800;
+	controller->out_min = -800;
+
+	controller->proportional_gain = 0;
+	controller->integral_gain = 0;
+	controller->derivative_gain = 0;
+
+	controller->proportional_out = 0;
+	controller->integral_out = 0;
+	controller->derivative_out = 0;
+	controller->total_out = 0;
+
+	controller->error = 0;
+	controller->measured_pos = updated_measured_pos;
+}
+void set_gains_PID(pid_controller *controller, float Kp, float Ki, float Kd)
+{
+	controller->proportional_gain = Kp;
+	controller->integral_gain = Ki;
+	controller->derivative_gain = Kd;
+}
+void update_PID(pid_controller *controller, uint16_t updated_measured_pos, uint16_t set_point)
+{
+	float32_t adjusted_measured_pos = updated_measured_pos;
+
+	float32_t updated_error = set_point - updated_measured_pos;
+
+	//this block makes sure that if the setpoint is near boundaries (0 or 359 degrees), can still approach the setpoint
+	//from the direction that has the angle measurement spike from 0 to 359 degrees or 359 to 0 degrees
+	//this is done by adjusting the error term
+	if (updated_measured_pos > set_point + 180 && set_point < 180)
+	{
+		adjusted_measured_pos = adjusted_measured_pos - 360;
+	}
+	else if (updated_measured_pos < set_point - 180 && set_point >= 180)
+	{
+		adjusted_measured_pos = adjusted_measured_pos + 360;
+	}
+	updated_error = set_point - adjusted_measured_pos;
+
+	//calculate difference for derivative term, but need to account for when motor goes from 359->0 and 0->359
+	//make sure that when it goes 359->0, the difference is 1, and 0->359 is -1
+	float32_t position_difference = updated_measured_pos - controller->measured_pos;
+	if (position_difference > 300) //when it goes from 0 to 359
+	{
+		position_difference = position_difference - 360;
+	}
+	else if (position_difference < -300) //when it goes from 359 to 0
+	{
+		position_difference = position_difference + 360;
+	}
+
+	//updated the outputs of the P, I, and D components of the controller
+	controller->proportional_out = controller->proportional_gain * updated_error;
+	controller->integral_out = controller->integral_gain * controller->Ts * (updated_error + controller->error) / 2.0 + controller->integral_out;
+	controller->derivative_out = ((controller->derivative_gain * 2) * (position_difference) //
+	+ (2 * controller->tau - controller->Ts) * controller->derivative_out) / (2 * controller->tau + controller->Ts);
+	//note: derivative term uses measured value instead of error term to avoid kick back
+
+	//clamp integrator implementation
+	float integral_min, integral_max;
+	//determine integrator limits
+	if (controller->out_max > controller->proportional_out)
+	{
+		integral_max = controller->out_max - controller->proportional_out + controller->derivative_out; //see total_out comment to see why adding derivative term instead of subtracting here
+	}
+	else
+	{
+		integral_max = 0;
+	}
+	if (controller->out_min < controller->proportional_out)
+	{
+		integral_min = controller->out_min - controller->proportional_out + controller->derivative_out; //see total_out comment to see why adding derivative term instead of subtracting here
+	}
+	else
+	{
+		integral_min = 0;
+	}
+
+	//get absolute error
+	float32_t absval_error = controller->error;
+	if (absval_error < 0)
+	{
+		absval_error = -1 * absval_error;
+	}
+
+	if (absval_error < 30) //limit integrator even more once closer to desired angle.
+	{
+		integral_max = 340;
+		integral_min = -340;
+	}
+	if (absval_error < 10) //limit integrator even more once closer to desired angle.
+	{
+		integral_max = 320; //RED MOTOR
+		integral_min = -320;
+	}
+	//clamping of integrator
+	if (controller->integral_out > integral_max)
+	{
+		controller->integral_out = integral_max;
+	}
+	else if (controller->integral_out < integral_min)
+	{
+		controller->integral_out = integral_min;
+	}
+
+	//compute total output of controller
+	controller->total_out = controller->proportional_out + controller->integral_out - controller->derivative_out; //note negative sign on derivative term, this is correct since it is on the feedback loop
+
+	//limit total output of controller
+	if (controller->total_out > controller->out_max)
+	{
+		controller->total_out = controller->out_max;
+	}
+	else if (controller->total_out < controller->out_min)
+	{
+		controller->total_out = controller->out_min;
+	}
+
+	//updated the error and measured position
+	controller->error = updated_error;
+	controller->measured_pos = updated_measured_pos;
+
+}
+void update_motor_input(int16_t new_out, uint32_t **active_buffer_address, uint32_t **inactive_buffer_address)
+{
+	if (new_out > 0)
+	{
+		HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, GPIO_PIN_RESET);
+		HAL_GPIO_WritePin(GPIOB, GPIO_PIN_4, GPIO_PIN_SET);
+
+	}
+	else if (new_out < 0)
+	{
+		HAL_GPIO_WritePin(GPIOB, GPIO_PIN_4, GPIO_PIN_RESET);
+		HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, GPIO_PIN_SET);
+		new_out = new_out * -1;
+	}
+
+	**inactive_buffer_address = new_out;
+	uint32_t *temp_uint32_address = *active_buffer_address;
+	*active_buffer_address = *inactive_buffer_address;
+	*inactive_buffer_address = temp_uint32_address;
+
+}
 /* USER CODE END 4 */
 
 /**
