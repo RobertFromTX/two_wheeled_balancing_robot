@@ -198,7 +198,7 @@ void update_ypr(kalman_filter *filter);
 //PID control related functions
 void initialize_PID(pid_controller *controller, uint16_t updated_measured_pos);
 void set_gains_PID(pid_controller *controller, float Kp, float Ki, float Kd);
-void update_PID(pid_controller *controller, uint16_t updated_measured_pos, uint16_t set_point);
+void update_PID(pid_controller *controller, float updated_measured_pos, float set_point);
 void update_motor_input(int16_t new_out, uint32_t **active_buffer, uint32_t **inactive_buffer);
 /* USER CODE END PFP */
 
@@ -295,9 +295,11 @@ int main(void)
 
 	//setup PID controller
 	// pid_controller motor_controller; // moved to private variables to see values of attributes in structs in debug mode easier
-	initialize_PID(&motor_controller, 0);
-	set_gains_PID(&motor_controller, 6, 200, .015); //RED MOTOR (also works for yellow but less aggressive)
-
+	initialize_PID(&motor_controller, 90); //assume 90 degrees is start position (upright)
+	//set_gains_PID(&motor_controller, 69, 200, .1); //RED MOTOR (also works for yellow but less aggressive)
+	//set_gains_PID(&motor_controller, 78, 0, .01); //RED MOTOR (also works for yellow but less aggressive)
+	//set_gains_PID(&motor_controller, 60, 0, .005);
+	set_gains_PID(&motor_controller, 25, 500, 1);
 	/* USER CODE END 2 */
 
 	/* Infinite loop */
@@ -307,7 +309,7 @@ int main(void)
 		if (data_ready)
 		{
 			HAL_NVIC_DisableIRQ(EXTI4_IRQn);
-
+			HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_9);
 			//get accelerometer and gyro data and store in struct.
 			//reading without FIFO, IMPORTANT: if using interrupt to synchronize, need a series resistor between interrupt pin on sensor and EXTI pin. Helps to form low pass filter to dampen voltage spikes that mess up the i2c bus and probably more importantly decrease current that could drive SDA pin low.
 			mpu6050_get_raw_measurements(&hi2c1, &sensor_data_1);
@@ -326,7 +328,7 @@ int main(void)
 			update_motor_input((int16_t) motor_controller.total_out, &active_buffer, &inactive_buffer); //make output whole number since pwm requires it
 
 			data_ready = 0;
-
+			HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_9);
 			HAL_NVIC_EnableIRQ(EXTI4_IRQn);
 		}
 
@@ -541,6 +543,9 @@ static void MX_GPIO_Init(void)
 	/*Configure GPIO pin Output Level */
 	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_9, GPIO_PIN_RESET);
 
+	/*Configure GPIO pin Output Level */
+	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_4 | GPIO_PIN_5, GPIO_PIN_RESET);
+
 	/*Configure GPIO pin : PA9 */
 	GPIO_InitStruct.Pin = GPIO_PIN_9;
 	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
@@ -552,6 +557,13 @@ static void MX_GPIO_Init(void)
 	GPIO_InitStruct.Pin = GPIO_PIN_3;
 	GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
 	GPIO_InitStruct.Pull = GPIO_NOPULL;
+	HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+	/*Configure GPIO pins : PB4 PB5 */
+	GPIO_InitStruct.Pin = GPIO_PIN_4 | GPIO_PIN_5;
+	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+	GPIO_InitStruct.Pull = GPIO_NOPULL;
+	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
 	HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
 	/* EXTI interrupt init*/
@@ -751,7 +763,7 @@ void kalman_filter_init(kalman_filter *filter)
 	memcpy(&(filter->matrix_H[0][0]), ((float32_t[4][4]){{temp_val, 0, 0, 0}, {0, temp_val, 0, 0}, {0, 0, temp_val, 0}, {0, 0, 0, temp_val}}), 4 * 4 * sizeof(float32_t));
 
 	//set process noise covariance
-	temp_val = 0.005;
+	temp_val = 0.08;
 	memcpy(&(filter->matrix_Q[0][0]), ((float32_t[4][4]){{temp_val, 0, 0, 0}, {0, temp_val, 0, 0}, {0, 0, temp_val, 0}, {0, 0, 0, temp_val}}), 4 * 4 * sizeof(float32_t));
 
 	//set measurement noise covariance
@@ -880,11 +892,11 @@ void update_ypr(kalman_filter *filter)
 void initialize_PID(pid_controller *controller, uint16_t updated_measured_pos)
 {
 
-	controller->Ts = 0.0001; //equates to 10kHz
-	controller->tau = .001;
+	controller->Ts = 0.004; //equates to 250Hz
+	controller->tau = .01;
 
-	controller->out_max = 800;
-	controller->out_min = -800;
+	controller->out_max = 1000;
+	controller->out_min = -1000;
 
 	controller->proportional_gain = 0;
 	controller->integral_gain = 0;
@@ -904,11 +916,11 @@ void set_gains_PID(pid_controller *controller, float Kp, float Ki, float Kd)
 	controller->integral_gain = Ki;
 	controller->derivative_gain = Kd;
 }
-void update_PID(pid_controller *controller, uint16_t updated_measured_pos, uint16_t set_point)
+void update_PID(pid_controller *controller, float updated_measured_pos, float set_point)
 {
-	float32_t adjusted_measured_pos = updated_measured_pos;
+	float adjusted_measured_pos = updated_measured_pos;
 
-	float32_t updated_error = set_point - updated_measured_pos;
+	float updated_error = set_point - updated_measured_pos;
 
 	//this block makes sure that if the setpoint is near boundaries (0 or 359 degrees), can still approach the setpoint
 	//from the direction that has the angle measurement spike from 0 to 359 degrees or 359 to 0 degrees
@@ -945,7 +957,7 @@ void update_PID(pid_controller *controller, uint16_t updated_measured_pos, uint1
 	//clamp integrator implementation
 	float integral_min, integral_max;
 	//determine integrator limits
-	if (controller->out_max > controller->proportional_out)
+	if (controller->out_max > controller->proportional_out - controller->derivative_out)
 	{
 		integral_max = controller->out_max - controller->proportional_out + controller->derivative_out; //see total_out comment to see why adding derivative term instead of subtracting here
 	}
@@ -953,7 +965,7 @@ void update_PID(pid_controller *controller, uint16_t updated_measured_pos, uint1
 	{
 		integral_max = 0;
 	}
-	if (controller->out_min < controller->proportional_out)
+	if (controller->out_min < controller->proportional_out - controller->derivative_out)
 	{
 		integral_min = controller->out_min - controller->proportional_out + controller->derivative_out; //see total_out comment to see why adding derivative term instead of subtracting here
 	}
@@ -969,15 +981,15 @@ void update_PID(pid_controller *controller, uint16_t updated_measured_pos, uint1
 		absval_error = -1 * absval_error;
 	}
 
-	if (absval_error < 30) //limit integrator even more once closer to desired angle.
+	if (absval_error < 5) //limit integrator even more once closer to desired angle.
 	{
-		integral_max = 340;
-		integral_min = -340;
+		integral_max = 600;
+		integral_min = -600;
 	}
-	if (absval_error < 10) //limit integrator even more once closer to desired angle.
+	if (absval_error < 3) //limit integrator even more once closer to desired angle.
 	{
-		integral_max = 320; //RED MOTOR
-		integral_min = -320;
+		integral_max = 300; //RED MOTOR
+		integral_min = -300;
 	}
 	//clamping of integrator
 	if (controller->integral_out > integral_max)
