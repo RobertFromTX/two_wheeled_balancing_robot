@@ -209,7 +209,7 @@ void update_motor_input(int16_t new_out, uint32_t **active_buffer, uint32_t **in
 
 /**
  * @brief  The application entry point.
- * @retval int
+ * @retval  -
  */
 int main(void)
 {
@@ -299,7 +299,10 @@ int main(void)
 	//set_gains_PID(&motor_controller, 69, 200, .1); //RED MOTOR (also works for yellow but less aggressive)
 	//set_gains_PID(&motor_controller, 78, 0, .01); //RED MOTOR (also works for yellow but less aggressive)
 	//set_gains_PID(&motor_controller, 60, 0, .005);
-	set_gains_PID(&motor_controller, 25, 500, 1);
+	//set_gains_PID(&motor_controller, 30, 0, .3);	//1khz pwm, doesnt work
+	//set_gains_PID(&motor_controller, 62, 0, .85); //works on carpet //6.39 V on power supply
+	set_gains_PID(&motor_controller, 80, 35, .6); //6.39 V on power supply, cant recover from big angles
+	set_gains_PID(&motor_controller, 60, 0, 0); //7.35 V on power supply
 	/* USER CODE END 2 */
 
 	/* Infinite loop */
@@ -453,7 +456,7 @@ static void MX_TIM1_Init(void)
 
 	/* USER CODE END TIM1_Init 1 */
 	htim1.Instance = TIM1;
-	htim1.Init.Prescaler = 63;
+	htim1.Init.Prescaler = 3;
 	htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
 	htim1.Init.Period = 999;
 	htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
@@ -893,7 +896,7 @@ void initialize_PID(pid_controller *controller, uint16_t updated_measured_pos)
 {
 
 	controller->Ts = 0.004; //equates to 250Hz
-	controller->tau = .01;
+	controller->tau = .001;
 
 	controller->out_max = 1000;
 	controller->out_min = -1000;
@@ -954,6 +957,11 @@ void update_PID(pid_controller *controller, float updated_measured_pos, float se
 	+ (2 * controller->tau - controller->Ts) * controller->derivative_out) / (2 * controller->tau + controller->Ts);
 	//note: derivative term uses measured value instead of error term to avoid kick back
 
+	//Deadzone for Proportional
+//	if (updated_measured_pos < 90.05 && updated_measured_pos > 89.95)
+//	{
+//		controller->proportional_out = 0;
+//	}
 	//clamp integrator implementation
 	float integral_min, integral_max;
 	//determine integrator limits
