@@ -221,6 +221,7 @@ int main(void)
 	/* MCU Configuration--------------------------------------------------------*/
 
 	/* Reset of all peripherals, Initializes the Flash interface and the Systick. */
+
 	HAL_Init();
 
 	/* USER CODE BEGIN Init */
@@ -301,8 +302,12 @@ int main(void)
 	//set_gains_PID(&motor_controller, 60, 0, .005);
 	//set_gains_PID(&motor_controller, 30, 0, .3);	//1khz pwm, doesnt work
 	//set_gains_PID(&motor_controller, 62, 0, .85); //works on carpet //6.39 V on power supply
-	set_gains_PID(&motor_controller, 80, 35, .6); //6.39 V on power supply, cant recover from big angles
-	set_gains_PID(&motor_controller, 60, 0, 0); //7.35 V on power supply
+	//set_gains_PID(&motor_controller, 80, 35, .6); //6.39 V on power supply, cant recover from big angles
+	//set_gains_PID(&motor_controller, 60, 0, 0); //7.35 V on power supply, gave up
+	//set_gains_PID(&motor_controller, 10, 1, .06); //7.35 V on power supply, motor deadband compensation
+	//set_gains_PID(&motor_controller, 50, 30, 5); //3
+	//set_gains_PID(&motor_controller, 70, 50, 0.1); //3
+	set_gains_PID(&motor_controller, 53.7, 5, 0.03); //3
 	/* USER CODE END 2 */
 
 	/* Infinite loop */
@@ -766,11 +771,13 @@ void kalman_filter_init(kalman_filter *filter)
 	memcpy(&(filter->matrix_H[0][0]), ((float32_t[4][4]){{temp_val, 0, 0, 0}, {0, temp_val, 0, 0}, {0, 0, temp_val, 0}, {0, 0, 0, temp_val}}), 4 * 4 * sizeof(float32_t));
 
 	//set process noise covariance
-	temp_val = 0.08;
+//	temp_val = 0.08;
+	temp_val = 0.1;
 	memcpy(&(filter->matrix_Q[0][0]), ((float32_t[4][4]){{temp_val, 0, 0, 0}, {0, temp_val, 0, 0}, {0, 0, temp_val, 0}, {0, 0, 0, temp_val}}), 4 * 4 * sizeof(float32_t));
 
 	//set measurement noise covariance
-	temp_val = 1;
+	//temp_val = 1;
+	temp_val = 0.001;
 	memcpy(&(filter->matrix_R[0][0]), ((float32_t[4][4]){{temp_val, 0, 0, 0}, {0, temp_val, 0, 0}, {0, 0, temp_val, 0}, {0, 0, 0, temp_val}}), 4 * 4 * sizeof(float32_t));
 	temp_val = 1;
 	memcpy(&(filter->matrix_P[0][0]), ((float32_t[4][4]){{temp_val, 0, 0, 0}, {0, temp_val, 0, 0}, {0, 0, temp_val, 0}, {0, 0, 0, temp_val}}), 4 * 4 * sizeof(float32_t));
@@ -896,7 +903,7 @@ void initialize_PID(pid_controller *controller, uint16_t updated_measured_pos)
 {
 
 	controller->Ts = 0.004; //equates to 250Hz
-	controller->tau = .001;
+	controller->tau = .1;
 
 	controller->out_max = 1000;
 	controller->out_min = -1000;
@@ -957,7 +964,7 @@ void update_PID(pid_controller *controller, float updated_measured_pos, float se
 	+ (2 * controller->tau - controller->Ts) * controller->derivative_out) / (2 * controller->tau + controller->Ts);
 	//note: derivative term uses measured value instead of error term to avoid kick back
 
-	//Deadzone for Proportional
+//	//Deadzone for Proportional
 //	if (updated_measured_pos < 90.05 && updated_measured_pos > 89.95)
 //	{
 //		controller->proportional_out = 0;
@@ -989,16 +996,16 @@ void update_PID(pid_controller *controller, float updated_measured_pos, float se
 		absval_error = -1 * absval_error;
 	}
 
-	if (absval_error < 5) //limit integrator even more once closer to desired angle.
-	{
-		integral_max = 600;
-		integral_min = -600;
-	}
-	if (absval_error < 3) //limit integrator even more once closer to desired angle.
-	{
-		integral_max = 300; //RED MOTOR
-		integral_min = -300;
-	}
+//	if (absval_error < 5) //limit integrator even more once closer to desired angle.
+//	{
+//		integral_max = 600;
+//		integral_min = -600;
+//	}
+//	if (absval_error < 3) //limit integrator even more once closer to desired angle.
+//	{
+//		integral_max = 300; //RED MOTOR
+//		integral_min = -300;
+//	}
 	//clamping of integrator
 	if (controller->integral_out > integral_max)
 	{
@@ -1011,6 +1018,20 @@ void update_PID(pid_controller *controller, float updated_measured_pos, float se
 
 	//compute total output of controller
 	controller->total_out = controller->proportional_out + controller->integral_out - controller->derivative_out; //note negative sign on derivative term, this is correct since it is on the feedback loop
+
+	//deadband compensation, make sure to always provide pwm that will allow motor to be spinning.
+//	if (updated_measured_pos < 90.05 && updated_measured_pos > 89.95)
+//	{
+//
+//	}
+//	else if (controller->total_out > 0)
+//	{
+//		controller->total_out += 580;
+//	}
+//	else if (controller->total_out < 0)
+//	{
+//		controller->total_out -= 580;
+//	}
 
 	//limit total output of controller
 	if (controller->total_out > controller->out_max)
