@@ -307,7 +307,10 @@ int main(void)
 	//set_gains_PID(&motor_controller, 10, 1, .06); //7.35 V on power supply, motor deadband compensation
 	//set_gains_PID(&motor_controller, 50, 30, 5); //3
 	//set_gains_PID(&motor_controller, 70, 50, 0.1); //3
-	set_gains_PID(&motor_controller, 53.7, 5, 0.03); //3
+	//set_gains_PID(&motor_controller, 53.7, 5, 0.03);// last small whee version fail
+	set_gains_PID(&motor_controller, 53.7, 100, 0.7);//working small wheel version I believe
+	//set_gains_PID(&motor_controller, 28, 100, 2); //3d printed wheels
+	//set_gains_PID(&motor_controller, 27, 90, 1.1); //3d printed wheels
 	/* USER CODE END 2 */
 
 	/* Infinite loop */
@@ -970,24 +973,24 @@ void update_PID(pid_controller *controller, float updated_measured_pos, float se
 //		controller->proportional_out = 0;
 //	}
 	//clamp integrator implementation
-	float integral_min, integral_max;
-	//determine integrator limits
-	if (controller->out_max > controller->proportional_out - controller->derivative_out)
-	{
-		integral_max = controller->out_max - controller->proportional_out + controller->derivative_out; //see total_out comment to see why adding derivative term instead of subtracting here
-	}
-	else
-	{
-		integral_max = 0;
-	}
-	if (controller->out_min < controller->proportional_out - controller->derivative_out)
-	{
-		integral_min = controller->out_min - controller->proportional_out + controller->derivative_out; //see total_out comment to see why adding derivative term instead of subtracting here
-	}
-	else
-	{
-		integral_min = 0;
-	}
+//	float integral_min, integral_max;
+//	//determine integrator limits
+//	if (controller->out_max > controller->proportional_out - controller->derivative_out)
+//	{
+//		integral_max = controller->out_max - controller->proportional_out + controller->derivative_out; //see total_out comment to see why adding derivative term instead of subtracting here
+//	}
+//	else
+//	{
+//		integral_max = 0;
+//	}
+//	if (controller->out_min < controller->proportional_out - controller->derivative_out)
+//	{
+//		integral_min = controller->out_min - controller->proportional_out + controller->derivative_out; //see total_out comment to see why adding derivative term instead of subtracting here
+//	}
+//	else
+//	{
+//		integral_min = 0;
+//	}
 
 	//get absolute error
 	float32_t absval_error = controller->error;
@@ -1007,31 +1010,31 @@ void update_PID(pid_controller *controller, float updated_measured_pos, float se
 //		integral_min = -300;
 //	}
 	//clamping of integrator
-	if (controller->integral_out > integral_max)
-	{
-		controller->integral_out = integral_max;
-	}
-	else if (controller->integral_out < integral_min)
-	{
-		controller->integral_out = integral_min;
-	}
+//	if (controller->integral_out > integral_max)
+//	{
+//		controller->integral_out = integral_max;
+//	}
+//	else if (controller->integral_out < integral_min)
+//	{
+//		controller->integral_out = integral_min;
+//	}
 
 	//compute total output of controller
 	controller->total_out = controller->proportional_out + controller->integral_out - controller->derivative_out; //note negative sign on derivative term, this is correct since it is on the feedback loop
 
 	//deadband compensation, make sure to always provide pwm that will allow motor to be spinning.
-//	if (updated_measured_pos < 90.05 && updated_measured_pos > 89.95)
-//	{
-//
-//	}
-//	else if (controller->total_out > 0)
-//	{
-//		controller->total_out += 580;
-//	}
-//	else if (controller->total_out < 0)
-//	{
-//		controller->total_out -= 580;
-//	}
+	if (updated_measured_pos < 90.05 && updated_measured_pos > 89.95)
+	{
+
+	}
+	else if (controller->total_out > 0)
+	{
+		controller->total_out += 100;
+	}
+	else if (controller->total_out < 0)
+	{
+		controller->total_out -= 100;
+	}
 
 	//limit total output of controller
 	if (controller->total_out > controller->out_max)
