@@ -1,6 +1,10 @@
 ## Project Overview and Goals
 Over the summer I created a robot that balances using only two wheels.The robot utilizes a PID control loop and data fed from an accelerometer to maintain an upright orientation. I primarily started this project to learn more about STM32 microcontrollers and how to use their onboard peripherals; however, I also wanted to apply the theory I learned from my linear control systems class.
 
+https://github.com/user-attachments/assets/53945460-7c7f-4bdc-ada0-24642ccd9668
+
+![Two Wheeled Robot](assets/images/IMG_3527.JPG)
+
 ## Design and Component Selection
 The main design constraint was cost since the main purpose of the project was just to learn. What I did not anticipate from setting this design constraint was that it also made the implementation of the control system to be more challenging, which in turn helped me learn more.
 
