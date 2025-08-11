@@ -1,15 +1,18 @@
+# Two-Wheeled Self-Balancing Robot Blog
+Main code is located in: [two_wheel_balance/Core/Src/main.c](https://github.com/RobertFromTX/two_wheeled_balancing_robot/blob/main/two_wheel_balance/Core/Src/main.c)
+
 ## Video Demo
 https://github.com/user-attachments/assets/53945460-7c7f-4bdc-ada0-24642ccd9668
 
 ## Project Overview and Goals
-Over the summer I created a robot that balances using only two wheels.The robot utilizes a PID control loop and data fed from an accelerometer to maintain an upright orientation. I primarily started this project to learn more about STM32 microcontrollers and how to use their onboard peripherals; however, I also wanted to apply some theory that I learned from my linear control systems class.
+Over the summer I created a robot that balances using only two wheels. The robot utilizes a PID control loop and data fed from an accelerometer to maintain an upright orientation. I primarily started this project to learn more about STM32 microcontrollers and how to use their onboard peripherals; however, I also wanted to apply some theory that I learned from my linear control systems class.
 
 ![Two Wheeled Robot](assets/images/IMG_3527.JPG)
 
 ## Design and Component Selection
 The main design constraint was cost since I only needed this project to be a learning opportunity. What I did not anticipate from setting this design constraint was that it also made the implementation of the control system to be more challenging, which in turn helped me learn about robot control.
 
-The design incorporated components to accomplish the essential tasks required by a typical two-wheeled balancing robot. Below are a list of some of the tasks and how the design addressed them.
+The design incorporated components to accomplish the essential tasks required by a typical two-wheeled balancing robot. Below is a list of some of the tasks and how the design addressed them.
  
 ### Computation
 The STM32F303K8 microcontroller on the NUCLEO board was chosen for the design, which is based off of the ARM Cortex-M4 architecture. I opted to use an STM32 microcontroller since I wanted to gain knowledge that can be easily transferred across multiple other vendors, as ARM is ubiquitous in the embedded world. The microcontroller needed to be able to process data from peripherals as well as interact with them. While many microcontrollers would have included the necessary peripherals required for this design (I2C, timers, GPIO), the STM32F303K8 has a built-in FPU (Floating Point Unit), which offers an advantage in handling floating-point computations efficiently. In retrospect, the FPU was not needed to meet the speed requirement as I did not use it. My main resource for learning STM32 in this project was the [Mastering STM32 book](https://www.carminenoviello.com/mastering-stm32/).
@@ -35,7 +38,7 @@ I used the trilinear transformation, and then I took the Z transform inverse to 
 The PID control was the most challenging part of the project, with many flaws in the initial PID controller’s design. Initially for the integral term, I chose a clamp integrator. This was one of the flaws in my original design, but originally I thought it was good to prevent windup (i.e., the output of the integral term could grow to infinity). Since I clamped the integrator so that only enough from the integral term was outputted to get 100% duty cycle, the integral term would frequently get set to 0 and would not contribute at all in the control effort. As a result, the robot would have a tendency to keep leaning to one side, never generating enough power to go back to the other side. Once I completely got rid of any clamping, the robot started balancing much better since the integral term would eliminate any biases. Clamping of the integral term is not really necessary since the robot is constantly tilting back and forth, not allowing the integral term to go to infinity. Another issue I had was that I could not get the motor to move in small increments because there was no direct position control. It turns out that I was not using the derivative term properly. The derivative term allows the motor to make small steps. I was using a pseudodifferentiator, which basically is the pure derivative term and a lowpass filter right after. The issue was that the cutoff frequency I chose was too low, which made the derivative term to have too much delay for the robot to properly balance.
 
 ## Bill of Materials
-Now you may be wondering how much it all costs, right. After all, the main design constraint was the cost. Below is the bill of materials:
+Now you may be wondering how much it all costs, right? After all, the main design constraint was the cost. Below is the bill of materials:
 
 Item                     | Quantity               | Unit Price
 | ---------------------- | ---------------------- | ---------------------- |
