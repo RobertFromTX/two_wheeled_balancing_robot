@@ -12,7 +12,7 @@ Over the summer I created a robot that balances using only two wheels. The robot
 ![Two Wheeled Robot](assets/images/IMG_3527.JPG)
 
 ## Design and Component Selection
-The main design constraint was cost since I only needed this project to be a learning opportunity. What I did not anticipate from setting this design constraint was that it also made the implementation of the control system to be more challenging, which in turn helped me learn about robot control.
+The main design constraint was cost since I only needed this project to be a learning opportunity. What I did not anticipate from setting this design constraint was that it also made the implementation of the control system to be more challenging, which in turn helped me learn about robot control. Additionally, the design has to work on a smooth, hard surface. As you can see from the image above, the robot can easily balance without any control on carpet.
 
 The design incorporated components to accomplish the essential tasks required by a typical two-wheeled balancing robot. Below is a list of some of the tasks and how the design addressed them.
  
@@ -46,7 +46,7 @@ The design needed to house the components in a way that also makes balancing eas
 <br>Initial design of housing
 
 ![Initial Housing](assets/images/IMG_3539.JPG)  
-<br>Current design
+Current design
 
 ## Bill of Materials
 Now you may be wondering how much it all costs, right? After all, the main design constraint was the cost. Below is the bill of materials:
