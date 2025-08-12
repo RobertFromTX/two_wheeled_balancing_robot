@@ -3,6 +3,7 @@ Main code is located in: [two_wheel_balance/Core/Src/main.c](https://github.com/
 
 ## Video Demo
 https://github.com/user-attachments/assets/53945460-7c7f-4bdc-ada0-24642ccd9668
+
 If the video does not play, refresh the page.
 
 ## Project Overview and Goals
@@ -41,11 +42,11 @@ The PID control was the most challenging part of the project, with many flaws in
 ### Housing
 The design needed to house the components in a way that also makes balancing easy. Multiple iterations of designs were tested. Initial designs seemed to fail because the motors couldn't generate enough torque to restabilize the robot after tilting a certain amount. I decided to shift to a design that had as low of a center of mass as possible as a result, putting the heavy batteries near the axle of the motors. Most of the body was designed in fusion360 and 3D printed, but I also used a cardboard box to make the robot lighter. In hindsight, I believe the initial designs that I came up with could have worked since I had to fix the PID controller implementation to get the current body to work. From referencing other designs, the key to success seems to make sure the robot barely even tilts.
 
-![Initial Housing](assets/images/initial_body.png)  
-Initial design of housing
+![Initial Housing](assets/images/initial_body.png)
+<br>Initial design of housing
 
 ![Initial Housing](assets/images/IMG_3539.JPG)  
-Current design
+<br>Current design
 
 ## Bill of Materials
 Now you may be wondering how much it all costs, right? After all, the main design constraint was the cost. Below is the bill of materials:
