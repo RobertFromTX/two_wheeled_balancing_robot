@@ -3,6 +3,7 @@ Main code is located in: [two_wheel_balance/Core/Src/main.c](https://github.com/
 
 ## Video Demo
 https://github.com/user-attachments/assets/53945460-7c7f-4bdc-ada0-24642ccd9668
+If the video does not play, refresh the page.
 
 ## Project Overview and Goals
 Over the summer I created a robot that balances using only two wheels. The robot utilizes a PID control loop and data fed from an accelerometer to maintain an upright orientation. I primarily started this project to learn more about STM32 microcontrollers and how to use their onboard peripherals; however, I also wanted to apply some theory that I learned from my linear control systems class.
@@ -36,6 +37,15 @@ My linear control systems class mainly taught analog systems. However, since I w
 I used the trilinear transformation, and then I took the Z transform inverse to turn the analog PID controller into a digital one. From my research, the trilinear transform typically yields good results for matching the behavior of analog systems in a digital domain.
 
 The PID control was the most challenging part of the project, with many flaws in the initial PID controller’s design. Initially for the integral term, I chose a clamp integrator. This was one of the flaws in my original design, but originally I thought it was good to prevent windup (i.e., the output of the integral term could grow to infinity). Since I clamped the integrator so that only enough from the integral term was outputted to get 100% duty cycle, the integral term would frequently get set to 0 and would not contribute at all in the control effort. As a result, the robot would have a tendency to keep leaning to one side, never generating enough power to go back to the other side. Once I completely got rid of any clamping, the robot started balancing much better since the integral term would eliminate any biases. Clamping of the integral term is not really necessary since the robot is constantly tilting back and forth, not allowing the integral term to go to infinity. Another issue I had was that I could not get the motor to move in small increments because there was no direct position control. It turns out that I was not using the derivative term properly. The derivative term allows the motor to make small steps. I was using a pseudodifferentiator, which basically is the pure derivative term and a lowpass filter right after. The issue was that the cutoff frequency I chose was too low, which made the derivative term to have too much delay for the robot to properly balance.
+
+### Housing
+The design needed to house the components in a way that also makes balancing easy. Multiple iterations of designs were tested. Initial designs seemed to fail because the motors couldn't generate enough torque to restabilize the robot after tilting a certain amount. I decided to shift to a design that had as low of a center of mass as possible as a result, putting the heavy batteries near the axle of the motors. Most of the body was designed in fusion360 and 3D printed, but I also used a cardboard box to make the robot lighter. In hindsight, I believe the initial designs that I came up with could have worked since I had to fix the PID controller implementation to get the current body to work. From referencing other designs, the key to success seems to make sure the robot barely even tilts.
+
+![Initial Housing](assets/images/initial_body.png)  
+Initial design of housing
+
+![Initial Housing](assets/images/IMG_3539.JPG)  
+Current design
 
 ## Bill of Materials
 Now you may be wondering how much it all costs, right? After all, the main design constraint was the cost. Below is the bill of materials:
